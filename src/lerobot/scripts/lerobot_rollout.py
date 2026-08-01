@@ -31,6 +31,7 @@ Inference backends
 ------------------
     --inference.type=sync      One policy call per control tick (default)
     --inference.type=rtc       Real-Time Chunking for slow VLA models
+    --inference.type=remote    Action chunks from lerobot-policy-server
 
 Usage examples
 --------------
@@ -162,6 +163,7 @@ from lerobot.robots import (  # noqa: F401
     bi_openarm_follower,
     bi_rebot_b601_follower,
     bi_so_follower,
+    bi_yam,
     earthrover_mini_plus,
     hope_jr,
     koch_follower,

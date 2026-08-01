@@ -196,6 +196,9 @@ reachy2 = [
 # Seeed Studio reBot B601-DM follower (motorbridge / CAN) + StarArm102 / reBot Arm 102
 # leader (motorbridge-smart-servo / FashionStar UART servos).
 rebot = ["lerobot[motorbridge-dep]", "lerobot[motorbridge-smart-servo-dep]"]
+bi_yam = [
+    "i2rt @ git+https://github.com/i2rt-robotics/i2rt.git@26ffe68d3af91be2b9f0de04a79839983d2f3f5c",
+]
 kinematics = ["lerobot[placo-dep]"]
 intelrealsense = [
     "pyrealsense2>=2.55.1.6486,<2.57.0 ; sys_platform != 'darwin'",
@@ -241,6 +244,7 @@ lingbot_va = ["lerobot[transformers-dep]", "lerobot[diffusers-dep]", "lerobot[ac
 
 # Features
 async = ["lerobot[grpcio-dep]", "lerobot[matplotlib-dep]"]
+remote = ["lerobot[grpcio-dep]"]
 peft = ["lerobot[transformers-dep]", "lerobot[peft-dep]"]
 
 # Annotation pipeline (lerobot-annotate). The only backend is ``openai``,
@@ -307,6 +311,7 @@ all = [
     "lerobot[openarms]",
     "lerobot[reachy2]",
     "lerobot[rebot]",
+    "lerobot[bi_yam]",
     "lerobot[kinematics]",
     "lerobot[intelrealsense]",
     "lerobot[diffusion]",
@@ -323,6 +328,7 @@ all = [
     "lerobot[vla_jepa]",
     "lerobot[lingbot_va]",
     "lerobot[async]",
+    "lerobot[remote]",
     "lerobot[dev]",
     "lerobot[test]",
     "lerobot[video_benchmark]",
@@ -357,6 +363,7 @@ lerobot-edit-dataset="lerobot.scripts.lerobot_edit_dataset:main"
 lerobot-setup-can="lerobot.scripts.lerobot_setup_can:main"
 lerobot-annotate="lerobot.scripts.lerobot_annotate:main"
 lerobot-rollout="lerobot.scripts.lerobot_rollout:main"
+lerobot-policy-server="lerobot.scripts.lerobot_policy_server:main"
 
 # ---------------- Tool Configurations ----------------
 
@@ -364,6 +371,9 @@ lerobot-rollout="lerobot.scripts.lerobot_rollout:main"
 # To use a different CUDA variant, reinstall torch with an explicit index, e.g.:
 #   uv pip install --force-reinstall torch torchvision \
 #       --index-url https://download.pytorch.org/whl/cu130
+[tool.uv]
+build-constraint-dependencies = ["scikit-build-core<0.10"]
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
@@ -374,7 +384,11 @@ torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 
 [tool.setuptools.package-data]
-lerobot = ["envs/*.json", "annotations/steerable_pipeline/prompts/*.txt"]
+lerobot = [
+    "envs/*.json",
+    "annotations/steerable_pipeline/prompts/*.txt",
+    "remote_inference/*.proto",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

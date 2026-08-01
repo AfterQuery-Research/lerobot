@@ -65,6 +65,10 @@ class RolloutStrategy(abc.ABC):
         logger.info("Starting inference engine...")
         self._engine.reset()
         self._engine.start()
+        arm = getattr(ctx.hardware.robot_wrapper.inner, "arm", None)
+        if callable(arm):
+            logger.info("Arming robot after inference startup checks...")
+            arm()
         self._warmup_flushed = False
         self._cached_obs_processed = None
         logger.info("Inference engine started")
@@ -118,18 +122,32 @@ class RolloutStrategy(abc.ABC):
 
     def _teardown_hardware(self, hw: HardwareContext, return_to_initial_position: bool = True) -> None:
         """Stop the inference engine, optionally return robot to initial position, and disconnect hardware."""
+        inference_failed = bool(self._engine is not None and getattr(self._engine, "failed", False))
         if self._engine is not None:
             logger.info("Stopping inference engine...")
             self._engine.stop()
         robot = hw.robot_wrapper.inner
         if robot.is_connected:
-            if return_to_initial_position and hw.initial_position:
+            disarm = getattr(robot, "disarm", None)
+            if inference_failed:
+                logger.warning("Inference failed; disarming without a return trajectory")
+                if callable(disarm):
+                    try:
+                        disarm()
+                    except Exception as exc:
+                        logger.warning("Could not disarm robot cleanly: %s", exc)
+            elif return_to_initial_position and hw.initial_position:
                 logger.info("Returning robot to initial position before shutdown...")
                 self._return_to_initial_position(hw)
             elif not return_to_initial_position:
                 logger.info(
                     "Skipping return-to-initial-position (disabled by config); leaving robot in final pose."
                 )
+            if not inference_failed and callable(disarm):
+                try:
+                    disarm()
+                except Exception as exc:
+                    logger.warning("Could not disarm robot cleanly: %s", exc)
             logger.info("Disconnecting robot...")
             robot.disconnect()
         teleop = hw.teleop

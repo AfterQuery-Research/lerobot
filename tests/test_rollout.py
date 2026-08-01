@@ -90,7 +90,7 @@ def test_dagger_config_defaults():
 
 
 def test_inference_config_types():
-    from lerobot.rollout import RTCInferenceConfig, SyncInferenceConfig
+    from lerobot.rollout import RemoteInferenceConfig, RTCInferenceConfig, SyncInferenceConfig
 
     assert SyncInferenceConfig().type == "sync"
 
@@ -98,6 +98,55 @@ def test_inference_config_types():
     assert rtc.type == "rtc"
     assert rtc.queue_threshold == 30
     assert rtc.rtc is not None
+
+    remote = RemoteInferenceConfig()
+    assert remote.type == "remote"
+    assert remote.server_address == "127.0.0.1:8081"
+
+
+def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
+    from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    monkeypatch.setattr(sys, "argv", ["lerobot-rollout", "--inference.type=remote"])
+    cfg = RolloutConfig(robot=MockRobotConfig(), inference=RemoteInferenceConfig())
+
+    assert cfg.policy is None
+    assert cfg.device == "cpu"
+
+
+def test_remote_rollout_config_rejects_local_policy_path(monkeypatch):
+    from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["lerobot-rollout", "--inference.type=remote", "--policy.path=user/policy"],
+    )
+    with pytest.raises(ValueError, match="does not load --policy.path"):
+        RolloutConfig(robot=MockRobotConfig(), inference=RemoteInferenceConfig())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"connect_timeout_s": 0}, "timeouts"),
+        ({"jpeg_quality": 101}, "jpeg_quality"),
+        ({"image_encoding": "webp"}, "image_encoding"),
+        ({"tls_client_cert_path": "cert.pem"}, "certificate and key"),
+        (
+            {"tls_client_cert_path": "cert.pem", "tls_client_key_path": "key.pem"},
+            "TLS root certificate",
+        ),
+        ({"tls_server_name_override": "policy.internal"}, "TLS root certificate"),
+    ],
+)
+def test_remote_inference_config_validation(kwargs, message):
+    from lerobot.rollout import RemoteInferenceConfig
+
+    with pytest.raises(ValueError, match=message):
+        RemoteInferenceConfig(**kwargs)
 
 
 def test_sentry_config_defaults():
@@ -361,6 +410,47 @@ def test_create_inference_engine_sync():
         device="cpu",
     )
     assert isinstance(engine, SyncInferenceEngine)
+
+
+def test_create_inference_engine_remote():
+    from lerobot.rollout import RemoteInferenceConfig, create_inference_engine
+    from lerobot.rollout.inference.remote import RemoteInferenceEngine
+
+    robot_wrapper = MagicMock(robot_type="mock")
+    robot_wrapper.inner.id = "mock-id"
+    robot_wrapper.observation_features = {"top": (3, 4, 3)}
+    features = {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": (2,),
+            "names": ["joint_0.pos", "joint_1.pos"],
+        },
+        "action": {
+            "dtype": "float32",
+            "shape": (2,),
+            "names": ["joint_0.pos", "joint_1.pos"],
+        },
+        "observation.images.top": {
+            "dtype": "image",
+            "shape": (3, 4, 3),
+            "names": ["height", "width", "channels"],
+        },
+    }
+    engine = create_inference_engine(
+        RemoteInferenceConfig(image_encoding="png"),
+        policy=None,
+        preprocessor=None,
+        postprocessor=None,
+        robot_wrapper=robot_wrapper,
+        hw_features={},
+        dataset_features=features,
+        ordered_action_keys=["joint_0.pos", "joint_1.pos"],
+        task="test",
+        fps=30.0,
+        device="cpu",
+    )
+
+    assert isinstance(engine, RemoteInferenceEngine)
 
 
 # ---------------------------------------------------------------------------

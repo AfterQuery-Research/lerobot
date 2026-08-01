@@ -1,0 +1,156 @@
+# Remote Policy Inference
+
+Remote inference runs `lerobot-policy-server` on a GPU machine and
+`lerobot-rollout` on the computer attached to the robot. The server owns the
+checkpoint and model-side processors. The robot computer owns cameras, local
+safety checks, action scheduling, and motor communication.
+
+## Install
+
+On the policy server:
+
+```bash
+uv sync --extra remote --extra molmoact2
+```
+
+On a dual-YAM robot computer:
+
+```bash
+uv sync --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
+```
+
+The `bi_yam` extra pins the tested i2rt commit. Its native `ruckig` dependency
+uses the repository's `scikit-build-core` build constraint.
+
+## Start a MolmoAct2 server
+
+The released dual-YAM checkpoint contract uses normalization tag
+`yam_dual_molmoact2`, three cameras in `top`, `left`, `right` order, and 14
+state/action values in left-arm-then-right-arm order.
+
+```bash
+export LEROBOT_REMOTE_AUTH_TOKEN="$(openssl rand -hex 32)"
+
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path=allenai/MolmoAct2 \
+    --policy.policy_type=molmoact2 \
+    --policy.norm_tag=yam_dual_molmoact2 \
+    --policy.model_dtype=bfloat16 \
+    --policy.inference_action_mode=continuous \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
+The server loads and warms the model before listening. Opening a session also
+warms the exact camera dimensions and task prompt before the client is allowed
+to arm the robot. Only one robot session is accepted at a time.
+
+For a production deployment, add `--policy.revision=<commit SHA>` and use the
+same expected model ID on the client so a moving Hub branch cannot change the
+loaded checkpoint during a later restart.
+
+## Test with the dual-YAM simulator
+
+Export the same token on the client, then run the shared-world MuJoCo simulator:
+
+```bash
+export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
+
+uv run lerobot-rollout \
+    --strategy.type=base \
+    --inference.type=remote \
+    --inference.server_address=policy-host:8081 \
+    --inference.requested_model_id=allenai/MolmoAct2 \
+    --robot.type=bi_yam_simulator \
+    --robot.backend=mujoco \
+    --task="Pick up the object with both arms" \
+    --fps=30 \
+    --duration=30 \
+    --return_to_initial_position=false
+```
+
+Use `--robot.backend=fallback` for deterministic CPU-only dynamics when MuJoCo
+or its renderer is unavailable. Both simulator backends expose the same policy
+schema as the physical adapter. Simulation validates transport, timing, camera
+ordering, action limits, and lifecycle behavior; it does not validate CAN bus
+timing, camera placement, calibration, payloads, or physical collision safety.
+
+## Run a physical dual YAM
+
+Configure the two CAN interfaces and verify each arm independently before
+autonomous rollout. The physical adapter starts one isolated i2rt worker per
+arm and keeps both workers idle until server negotiation succeeds.
+
+```bash
+export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
+
+uv run lerobot-rollout \
+    --strategy.type=base \
+    --inference.type=remote \
+    --inference.server_address=policy-host:8081 \
+    --inference.requested_model_id=allenai/MolmoAct2 \
+    --robot.type=bi_yam_follower \
+    --robot.left_arm_config.channel=can0 \
+    --robot.right_arm_config.channel=can1 \
+    --robot.cameras='{
+      top: {type: realsense, serial_number_or_name: "<top serial>", width: 640, height: 480, fps: 30},
+      left: {type: realsense, serial_number_or_name: "<left serial>", width: 640, height: 480, fps: 30},
+      right: {type: realsense, serial_number_or_name: "<right serial>", width: 640, height: 480, fps: 30}
+    }' \
+    --task="Pick up the object with both arms" \
+    --fps=30 \
+    --duration=30
+```
+
+Camera dictionary order is part of the model contract. A missing, extra, or
+reordered camera, state field, or action field makes session setup fail before
+the robot arms. Commands are bounded by joint, gripper, and per-step delta
+limits on the robot computer.
+
+## Secure the connection
+
+An authentication token identifies an authorized client but does not encrypt
+traffic. For an untrusted network, use TLS, mutual TLS, a private VPN, or an SSH
+tunnel. Do not expose an insecure server directly to the public internet.
+
+An SSH tunnel keeps the server bound to localhost:
+
+```bash
+# Policy server
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path=allenai/MolmoAct2 \
+    --policy.policy_type=molmoact2 \
+    --policy.norm_tag=yam_dual_molmoact2 \
+    --policy.inference_action_mode=continuous \
+    --host=127.0.0.1 \
+    --port=8081
+
+# Robot computer
+ssh -N -L 8081:127.0.0.1:8081 user@policy-host
+uv run lerobot-rollout <robot flags> \
+    --inference.type=remote \
+    --inference.server_address=127.0.0.1:8081
+```
+
+For TLS, configure `--tls_cert_path` and `--tls_key_path` on the server and
+`--inference.tls_root_cert_path` on the client. Add
+`--tls_client_ca_path` on the server plus the matching
+`--inference.tls_client_cert_path` and `--inference.tls_client_key_path` on the
+client for mutual TLS.
+
+The server refuses to start when its default token environment variable is
+missing. For intentionally unauthenticated localhost operation inside a
+trusted tunnel, pass `--auth_token_env=''` explicitly on the server.
+
+## Failure behavior
+
+The client validates the protocol version, model fingerprint, exact feature
+order, camera dimensions, and fixed task before arming. It uses one in-flight
+request, bounded message sizes, explicit deadlines, monotonically increasing
+observation sequences, and latency-based prefix dropping for stale actions.
+
+If transport, validation, decoding, or server inference fails, the action queue
+is cleared and rollout shutdown begins. Teardown disarms both arms, while each
+local i2rt worker independently enters idle if its command TTL expires. The
+client does not automatically reconnect and resume motion after a failure.

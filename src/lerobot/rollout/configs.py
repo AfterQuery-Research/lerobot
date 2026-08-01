@@ -28,7 +28,7 @@ from lerobot.robots.config import RobotConfig
 from lerobot.teleoperators.config import TeleoperatorConfig
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
-from .inference import InferenceEngineConfig, SyncInferenceConfig
+from .inference import InferenceEngineConfig, RemoteInferenceConfig, SyncInferenceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -224,13 +224,13 @@ class RolloutConfig:
     robot: RobotConfig | None = None
     teleop: TeleoperatorConfig | None = None
 
-    # Policy (loaded from --policy.path via __post_init__)
+    # Policy (loaded from --policy.path for local inference)
     policy: PreTrainedConfig | None = None
 
     # Strategy (polymorphic: --strategy.type=base|sentry|highlight|dagger)
     strategy: RolloutStrategyConfig = field(default_factory=BaseStrategyConfig)
 
-    # Inference backend (polymorphic: --inference.type=sync|rtc)
+    # Inference backend (polymorphic: --inference.type=sync|rtc|remote)
     inference: InferenceEngineConfig = field(default_factory=SyncInferenceConfig)
 
     # Dataset (required for sentry, highlight, dagger; None for base)
@@ -342,6 +342,13 @@ class RolloutConfig:
             raise ValueError("--robot.type is required for rollout")
 
         policy_path = parser.get_path_arg("policy")
+        is_remote = isinstance(self.inference, RemoteInferenceConfig)
+        if is_remote and policy_path:
+            raise ValueError(
+                "Remote inference does not load --policy.path on the robot computer. "
+                "Configure the checkpoint on lerobot-policy-server and optionally set "
+                "--inference.requested_model_id to pin the expected model."
+            )
         if policy_path:
             yaml_overrides = parser.get_yaml_overrides("policy")
             cli_overrides = parser.get_cli_overrides("policy") or []
@@ -355,8 +362,10 @@ class RolloutConfig:
                 cli_overrides=policy_overrides,
             )
             self.policy.pretrained_path = policy_path
-        if self.policy is None:
+        if self.policy is None and not is_remote:
             raise ValueError("--policy.path is required for rollout")
+        if self.policy is not None and is_remote:
+            raise ValueError("Remote inference cannot be combined with an in-process policy config")
 
         # --- Task resolution ---
         # When any --dataset.* flag is passed, draccus creates a DatasetRecordConfig with single_task="".
@@ -373,7 +382,10 @@ class RolloutConfig:
         # Resolve device from the policy config when not explicitly set so all
         # components (policy.to, preprocessor, inference engine) use the same
         # device string instead of inconsistent fallbacks.
-        if self.device is None or not is_torch_device_available(self.device):
+        if is_remote:
+            self.device = "cpu"
+        elif self.device is None or not is_torch_device_available(self.device):
+            assert self.policy is not None
             resolved = self.policy.device
             if resolved:
                 self.device = resolved
