@@ -74,6 +74,32 @@ schema as the physical adapter. Simulation validates transport, timing, camera
 ordering, action limits, and lifecycle behavior; it does not validate CAN bus
 timing, camera placement, calibration, payloads, or physical collision safety.
 
+## Probe real cameras without controlling the robot
+
+`lerobot-policy-probe` opens only the configured RealSense cameras, submits one
+observation, validates the returned action chunk, and discards it. The command
+does not construct a robot, import i2rt, open a CAN interface, arm motors, or
+persist action values. State is an explicit argument because obtaining live YAM
+state through i2rt requires motor communication and belongs in a supervised
+hardware test.
+
+For a camera, network, and checkpoint smoke test, the released checkpoint's
+median state can stand in for live state. Keep the source label accurate:
+
+```bash
+uv run lerobot-policy-probe \
+    --server_address=<server-ip>:8081 \
+    --task="Pick up the object with both arms" \
+    --state_source=checkpoint-q50-not-live-hardware \
+    --state='[-0.07460957,1.45187420,1.27903396,-0.80040099,0.11633919,-0.22562396,0.74105157,0.08125296,1.54637449,1.24736453,-0.68268310,-0.13268824,0.19324336,0.69752937]'
+```
+
+Each run creates a timestamped directory under `outputs/policy_probe` containing
+the three captured PNGs and `report.json`. The report contains frame hashes,
+model identity, timing, action shape and range, and `actions_discarded: true`; it
+never contains the action vector. This probe verifies real camera input and real
+policy execution, but not live joint-state acquisition or physical control.
+
 ## Run a physical dual YAM
 
 Configure the two CAN interfaces and verify each arm independently before

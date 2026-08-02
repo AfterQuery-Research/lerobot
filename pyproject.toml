@@ -364,6 +364,7 @@ lerobot-setup-can="lerobot.scripts.lerobot_setup_can:main"
 lerobot-annotate="lerobot.scripts.lerobot_annotate:main"
 lerobot-rollout="lerobot.scripts.lerobot_rollout:main"
 lerobot-policy-server="lerobot.scripts.lerobot_policy_server:main"
+lerobot-policy-probe="lerobot.scripts.lerobot_policy_probe:main"
 
 # ---------------- Tool Configurations ----------------
 
