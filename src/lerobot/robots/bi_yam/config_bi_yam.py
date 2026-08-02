@@ -290,7 +290,7 @@ class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
     left_arm_config: AfterQueryLeftYAMArmConfig = field(default_factory=AfterQueryLeftYAMArmConfig)
     right_arm_config: AfterQueryRightYAMArmConfig = field(default_factory=AfterQueryRightYAMArmConfig)
     cameras: dict[str, CameraConfig] = field(default_factory=_afterquery_cameras)
-    max_joint_delta: float = 0.03
+    max_joint_delta: float = 0.1
     max_gripper_delta: float = 0.03
     policy_start_position: tuple[float, ...] | None = AFTERQUERY_BIMANUAL_YAM_START_POSITION
     policy_reset_tolerance: float = 0.035

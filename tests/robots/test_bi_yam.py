@@ -309,7 +309,7 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert not config.left_arm_config.allow_gripper_calibration
     assert not config.right_arm_config.allow_gripper_calibration
     assert config.calibration_side is None
-    assert config.max_joint_delta == 0.03
+    assert config.max_joint_delta == 0.1
     assert config.max_gripper_delta == 0.03
     assert MOLMOACT2_YAM_LEFT_START_POSITION[:6] == (0.0,) * 6
     assert MOLMOACT2_YAM_RIGHT_START_POSITION[:6] == (0.0,) * 6

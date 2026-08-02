@@ -111,11 +111,11 @@ arm and keeps both workers idle until server negotiation succeeds.
 The registered `afterquery_dual_yam` robot type provides typed defaults for the
 lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
 verified RealSense serials at 30 FPS (`top` at 640x480; `left` and `right` at
-640x360), per-tick deltas of 0.03 radians for joints and 0.03 normalized units
+640x360), per-tick deltas of 0.10 radians for joints and 0.03 normalized units
 for grippers, the lab's measured unwrapped raw gripper endpoints, and a
-one-second command watchdog. The policy deltas
-admit the released checkpoint's small absolute targets while operational joint
-and gripper bounds remain enforced. The watchdog
+one-second command watchdog. These per-tick deltas were validated during a
+60-second physical MolmoAct2 rollout at 30 FPS. Operational joint and gripper
+bounds remain enforced. The watchdog
 allows for normal three-camera scheduling jitter but still puts both workers in
 safe idle if the client command stream stops. Server address, task, and duration
 remain runtime arguments.
