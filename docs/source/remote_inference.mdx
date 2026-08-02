@@ -213,6 +213,8 @@ uv run lerobot-rollout \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
     --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.max_joint_delta=0.10 \
+    --robot.max_gripper_delta=0.03 \
     --robot.cameras="$CAMERAS" \
     --robot.control_telemetry_path=outputs/yam-control.jsonl \
     --task="Pick up the oranges and put them in the bowl" \
