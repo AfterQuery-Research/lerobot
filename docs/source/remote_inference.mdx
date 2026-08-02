@@ -1,9 +1,14 @@
 # Remote Policy Inference
 
-Remote inference runs `lerobot-policy-server` on a GPU machine and
-`lerobot-rollout` on the computer attached to the robot. The server owns the
-checkpoint and model-side processors. The robot computer owns cameras, local
-safety checks, action scheduling, and motor communication.
+Remote inference runs the policy on a GPU server and controls hardware from a
+separate robot computer:
+
+```text
+robot + cameras -> lerobot-rollout -> network -> lerobot-policy-server -> actions
+```
+
+The client only needs a reachable server address. A router, SSH relay, or other
+network proxy can sit between the machines without changing either command.
 
 ## Install
 
@@ -13,26 +18,20 @@ On the policy server:
 uv sync --extra remote --extra molmoact2
 ```
 
-On a dual-YAM robot computer:
+On the dual-YAM computer:
 
 ```bash
 uv sync --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
 ```
 
-On Linux ARM64, the `intelrealsense` extra selects the RealSense release that
-provides an ARM64 wheel; earlier releases only publish Linux x86-64 wheels. The
-lockfile also selects CPU-only PyTorch wheels on ARM64 instead of the policy
-server's CUDA build.
-The `bi_yam` extra pins the tested i2rt commit containing the multi-turn gripper
-encoder-wrap fix from
-[i2rt PR #82](https://github.com/i2rt-robotics/i2rt/pull/82). Its native
-`ruckig` dependency uses the repository's `scikit-build-core` build constraint.
+The `bi_yam` extra uses the tested AfterQuery i2rt commit containing the
+multi-turn gripper encoder-wrap fix from
+[i2rt PR #82](https://github.com/i2rt-robotics/i2rt/pull/82). On Linux ARM64,
+the client installation selects ARM64 RealSense and CPU-only PyTorch wheels.
 
-## Start a MolmoAct2 server
+## Start the server
 
-The released dual-YAM checkpoint contract uses normalization tag
-`yam_dual_molmoact2`, three cameras in `top`, `left`, `right` order, and 14
-state/action values in left-arm-then-right-arm order.
+Run this on the GPU machine:
 
 ```bash
 uv run lerobot-policy-server \
@@ -46,214 +45,204 @@ uv run lerobot-policy-server \
     --port=8081
 ```
 
-The server loads and warms the model before listening. Opening a session also
-warms the exact camera dimensions and task prompt before the client is allowed
-to arm the robot. Only one robot session is accepted at a time. The client only
-needs the server's reachable IP address and port.
+Wait until the model has loaded and the server is listening. For a repeatable
+deployment, also pass `--policy.revision=<commit-sha>`.
 
-For a production deployment, add `--policy.revision=<commit SHA>` and use the
-same expected model ID on the client so a moving Hub branch cannot change the
-loaded checkpoint during a later restart.
+## Set client values
 
-## Test with the dual-YAM simulator
-
-Run the shared-world MuJoCo simulator, replacing `<server-ip>` with the policy
-server's reachable IP address:
+On the robot computer, set the values for this installation once per shell:
 
 ```bash
-uv run lerobot-rollout \
-    --strategy.type=base \
-    --inference.type=remote \
-    --inference.server_address=<server-ip>:8081 \
-    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --robot.type=bi_yam_simulator \
-    --robot.backend=mujoco \
-    --task="pick up the object" \
-    --fps=30 \
-    --duration=30 \
-    --return_to_initial_position=false
+SERVER=<reachable-server-ip>:8081
+ROBOT_ID=<robot-id>
+LEFT_CAN=<left-can-adapter-serial>
+RIGHT_CAN=<right-can-adapter-serial>
+TOP_CAMERA=<top-camera-serial>
+LEFT_CAMERA=<left-camera-serial>
+RIGHT_CAMERA=<right-camera-serial>
+
+CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: '$LEFT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: '$RIGHT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}"
 ```
 
-Use `--robot.backend=fallback` for deterministic CPU-only dynamics when MuJoCo
-or its renderer is unavailable. Both simulator backends expose the same policy
-schema as the physical adapter. Simulation validates transport, timing, camera
-ordering, action limits, and lifecycle behavior; it does not validate CAN bus
-timing, camera placement, calibration, payloads, or physical collision safety.
+`ROBOT_ID` names this physical robot and selects its local calibration file. Use
+the same value every time on that robot.
 
-## Probe real cameras without controlling the robot
+### Find CAN adapter serials
 
-`lerobot-policy-probe` opens only the configured RealSense cameras, submits one
-observation, validates the returned action chunk, and discards it. The command
-does not construct a robot, import i2rt, open a CAN interface, arm motors, or
-persist action values. State is an explicit argument because obtaining live YAM
-state through i2rt requires motor communication and belongs in a supervised
-hardware test.
-
-For a camera, network, and checkpoint smoke test, the released checkpoint's
-median state can stand in for live state. Keep the source label accurate:
+Stop robot-control processes, then list the adapters without opening a CAN bus
+or sending frames:
 
 ```bash
-uv run lerobot-policy-probe \
-    --server_address=<server-ip>:8081 \
-    --robot_id=<robot-id> \
-    --task="pick up the object" \
-    --state_source=checkpoint-q50-not-live-hardware \
-    --state='[-0.07460957,1.45187420,1.27903396,-0.80040099,0.11633919,-0.22562396,0.74105157,0.08125296,1.54637449,1.24736453,-0.68268310,-0.13268824,0.19324336,0.69752937]' \
-    --cameras='{top: {type: intelrealsense, serial_number_or_name: "<top-camera-serial>", width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: "<left-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: "<right-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}'
+uv run lerobot-setup-can
 ```
 
-Each run creates a timestamped directory under `outputs/policy_probe` containing
-the three captured PNG files and `report.json`. The report contains frame hashes,
-model identity, timing, action shape and range, and `actions_discarded: true`; it
-never contains the action vector. This probe verifies real camera input and real
-policy execution, but not live joint-state acquisition or physical control.
+The serial belongs to the USB-to-CAN adapter, not to an arm. On a new machine,
+connect one adapter at a time, trace its cable to the left or right arm, and
+label the adapter or cable. The serial remains stable if Linux later assigns a
+different `canN` name.
 
-## Run a physical dual YAM
-
-The generic `bi_yam_follower` takes the robot ID, CANable USB serials, and camera
-serials at runtime. It does not require persistent udev interface names. The
-physical adapter starts one isolated i2rt worker per arm and keeps both workers
-idle until server negotiation succeeds.
-
-### Discover and configure CAN
-
-The configured serials identify the USB-to-CAN adapters, not the YAM arms. On a
-new installation, stop robot-control processes, connect one adapter at a time,
-run the read-only listing, and trace its CAN cable to the corresponding arm.
-Label the adapters or cables after the mapping is known.
-
-```bash
-uv run lerobot-setup-can --mode=list
-```
-
-The listing reports each stable USB serial and its current, potentially reordered
-`canN` interface. Configure the YAM adapters as classic CAN at 1 Mbit/s after a
-reboot or replug:
+Configure both links after a reboot or replug:
 
 ```bash
 uv run lerobot-setup-can \
-    --left_adapter_serial=<left-canable-serial> \
-    --right_adapter_serial=<right-canable-serial>
+    --left_adapter_serial="$LEFT_CAN" \
+    --right_adapter_serial="$RIGHT_CAN"
 ```
 
-This command performs only privileged `ip link` operations and verifies the
-result. It does not import i2rt, open a CAN bus, send motor frames, or move the
-robot. The rollout resolves the serials again and refuses to construct either
-i2rt worker if an adapter is missing, duplicated, down, in CAN FD mode, or set
-to the wrong bitrate.
+This performs only `ip link` setup and verification. It does not import i2rt,
+send motor frames, or move the robot.
 
-The generic defaults include per-tick deltas of 0.10 radians for joints and 0.03
-normalized units for grippers, a one-second command watchdog, and the tested
-operational bounds. Per-device gripper endpoints are loaded from the runtime
-robot ID's local calibration file rather than stored in source.
+### Find camera serials
 
-### Reset behavior
+List and preview the connected RealSense cameras:
 
-The public MolmoAct2 configs use six `0.0` arm-joint targets per arm. LeRobot
-preserves their left-then-right ordering and uses a tested both-open reset vector:
-`[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]`. Waypoints are no more than `0.01`
-apart at 30 Hz and are capped at 100 interpolation steps. The client holds the
-final target, verifies every value within `0.035`, and idles both arms if the pose
-is not reached within 30 seconds.
+```bash
+uv run lerobot-find-cameras realsense
+```
 
-The client resets before policy control and between policy episodes. LeRobot's
-default `--return_to_initial_position=true` returns to the same pose during normal
-teardown. Remote server negotiation completes before the client arms and begins
-the first reset.
+If their physical roles are not already labeled, connect one camera at a time
+to identify `top`, `left`, and `right`. Camera order is part of the MolmoAct2
+contract and must remain `top`, `left`, `right`.
 
-### Calibrate the grippers
+## Calibrate once
 
-Normal rollout requires both raw `[closed, open]` gripper endpoint pairs before
-either worker is created. Calibration starts only the selected arm, opens no
-cameras, and disables policy control. Each command below intentionally moves one
-gripper and must be supervised:
+Calibration intentionally moves one gripper at a time and must be supervised.
+Run it when installing a robot, replacing a gripper, or deliberately
+recalibrating:
 
 ```bash
 uv run lerobot-calibrate \
     --robot.type=bi_yam_follower \
-    --robot.id=<robot-id> \
-    --robot.left_arm_config.adapter_serial=<left-canable-serial> \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
     --robot.calibration_side=left \
     --robot.left_arm_config.allow_gripper_calibration=true
 
 uv run lerobot-calibrate \
     --robot.type=bi_yam_follower \
-    --robot.id=<robot-id> \
-    --robot.right_arm_config.adapter_serial=<right-canable-serial> \
+    --robot.id="$ROBOT_ID" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
     --robot.calibration_side=right \
     --robot.right_arm_config.allow_gripper_calibration=true
 ```
 
-The commands merge into
-`~/.cache/huggingface/lerobot/calibration/robots/bi_yam_follower/<robot-id>.json`.
-Use the same ID for calibration and rollout. Do not enable moving calibration in
-an autonomous rollout. To keep calibration under a checkout instead, add
-`--robot.calibration_dir=calibration` to calibration and rollout commands; that
-directory is gitignored.
+Both results are stored in:
 
-### Run the rollout
+```text
+~/.cache/huggingface/lerobot/calibration/robots/bi_yam_follower/<robot-id>.json
+```
+
+Normal startup refuses to create the arm workers if either gripper calibration
+is missing. Calibration values are local hardware data and are not committed to
+the repository.
+
+## Verify without motion
+
+Use `action_probe` before an autonomous rollout:
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=action_probe \
+    --strategy.reset_robot=false \
+    --strategy.action_log_path=outputs/yam-policy-actions.jsonl \
+    --inference.type=remote \
+    --inference.server_address="$SERVER" \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.cameras="$CAMERAS" \
+    --task="Pick up the oranges and put them in the bowl" \
+    --fps=30 \
+    --duration=10
+```
+
+This mode reads live joint and gripper state, captures all three real cameras,
+sends observations to the real policy server, and validates returned actions.
+The robot stays in safe idle: probe mode does not arm, reset, return to a pose,
+or call `robot.send_action`. Every returned target is written to
+`outputs/yam-policy-actions.jsonl` with `executed: false`.
+
+To test the reset separately, under supervision, add
+`--strategy.reset_robot=true`. Returned policy actions are still discarded.
+
+## Run with motion
+
+The following command arms the robot, moves it to the configured reset pose,
+and executes policy actions. Run it only with the workspace clear and a stop
+method ready:
 
 ```bash
 uv run lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
-    --inference.server_address=<server-ip>:8081 \
+    --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=bi_yam_follower \
-    --robot.id=<robot-id> \
-    --robot.left_arm_config.adapter_serial=<left-canable-serial> \
-    --robot.right_arm_config.adapter_serial=<right-canable-serial> \
-    --robot.cameras='{top: {type: intelrealsense, serial_number_or_name: "<top-camera-serial>", width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: "<left-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: "<right-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}' \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.cameras="$CAMERAS" \
     --robot.control_telemetry_path=outputs/yam-control.jsonl \
     --task="Pick up the oranges and put them in the bowl" \
     --fps=30 \
     --duration=60
 ```
 
-After negotiation, the command resets the robot before sending the first policy
-observation. The optional telemetry records requested, bounded, applied, and
-measured targets, tracking errors, and clipped joints. Empty action-queue
-iterations do not advance the execution tick.
+Telemetry records requested, bounded, applied, and measured targets, tracking
+errors, and clipped joints.
 
-To run the reset and remote policy while logging but never executing returned
-policy actions, use the action-probe strategy with the same robot and camera
-arguments:
+## Reset and safety behavior
+
+The default reset target is:
+
+```text
+[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]
+```
+
+This is six zero joint targets and an open gripper for each arm. Reset waypoints
+are at most `0.01` apart at 30 Hz and capped at 100 interpolation steps. The
+client holds the final target, requires every value within `0.035`, and idles
+both arms if the pose is not reached within 30 seconds.
+
+Policy commands use the tested operational joint bounds, per-tick limits of
+`0.10` radians for joints and `0.03` normalized units for grippers, and a
+one-second command watchdog. Empty action-queue iterations do not advance the
+execution tick.
+
+The client also validates model identity, camera order and dimensions, state and
+action order, task, protocol version, deadlines, and message sizes. A transport,
+validation, decoding, or inference failure clears queued actions and begins
+shutdown. The client does not automatically reconnect and resume motion.
+
+## Optional checks
+
+### Camera and server only
+
+`lerobot-policy-probe` opens the cameras and runs one inference without
+constructing the robot or importing i2rt. Because it cannot read the arms, state
+must be supplied explicitly. This is useful before CAN hardware is available;
+the full `action_probe` above is preferred once the robot is connected.
+
+### Simulator
+
+The shared-world simulator exercises the same remote protocol and 14-value
+state/action schema:
 
 ```bash
 uv run lerobot-rollout \
     --strategy.type=action_probe \
-    --strategy.action_log_path=outputs/yam-policy-actions.jsonl \
     --inference.type=remote \
-    --inference.server_address=<server-ip>:8081 \
+    --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --robot.type=bi_yam_follower \
-    --robot.id=<robot-id> \
-    --robot.left_arm_config.adapter_serial=<left-canable-serial> \
-    --robot.right_arm_config.adapter_serial=<right-canable-serial> \
-    --robot.cameras='{top: {type: intelrealsense, serial_number_or_name: "<top-camera-serial>", width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: "<left-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: "<right-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}' \
-    --robot.control_telemetry_path=outputs/yam-reset-control.jsonl \
+    --robot.type=bi_yam_simulator \
+    --robot.backend=mujoco \
     --task="Pick up the oranges and put them in the bowl" \
     --fps=30 \
     --duration=10
 ```
 
-The configured reset is the only commanded motion. Once it succeeds, the
-strategy disarms both workers before submitting observations. Returned actions
-are written with `executed: false`; `robot.send_action` is never called.
-
-Camera dictionary order is part of the model contract. A missing, extra, or
-reordered camera, state field, or action field makes session setup fail before
-the robot arms. Commands are bounded by joint, gripper, and per-step delta limits
-on the robot computer.
-
-## Failure behavior
-
-The client validates the protocol version, model fingerprint, exact feature
-order, camera dimensions, and fixed task before arming. It uses one in-flight
-request, bounded message sizes, explicit deadlines, monotonically increasing
-observation sequences, and latency-based prefix dropping for stale actions.
-
-If transport, validation, decoding, or server inference fails, the action queue
-is cleared and rollout shutdown begins. Teardown disarms both arms, while each
-local i2rt worker independently enters idle if its command TTL expires. The
-client does not automatically reconnect and resume motion after a failure.
+Use `--robot.backend=fallback` when MuJoCo or its renderer is unavailable.
+Simulation validates transport, timing, schema, and lifecycle behavior, but not
+CAN timing, camera placement, calibration, payloads, or collision safety.

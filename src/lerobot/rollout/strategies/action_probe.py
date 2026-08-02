@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Policy action inspection after a real hardware reset, without action dispatch."""
+"""Policy action inspection without action dispatch."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class ActionProbeStrategy(RolloutStrategy):
-    """Reset once, disarm hardware, and persist policy outputs without executing them."""
+    """Persist policy outputs without executing them."""
 
     config: ActionProbeStrategyConfig
 
@@ -47,18 +47,21 @@ class ActionProbeStrategy(RolloutStrategy):
         robot = ctx.hardware.robot_wrapper.inner
         arm = getattr(robot, "arm", None)
         disarm = getattr(robot, "disarm", None)
-        if callable(arm) and not callable(disarm):
-            raise RuntimeError("Action probe requires disarm() when the robot exposes arm()")
+        if self.config.reset_robot and callable(arm) and not callable(disarm):
+            raise RuntimeError("Reset-enabled action probe requires disarm() when the robot exposes arm()")
 
         path = Path(self.config.action_log_path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         self._action_file = path.open("w", encoding="utf-8", buffering=1)
         logger.warning("ACTION PROBE MODE: policy actions will be logged but never sent to the robot")
         try:
-            self._init_engine(ctx)
+            self._init_engine(ctx, prepare_robot=self.config.reset_robot)
             if callable(disarm):
                 disarm()
-                logger.info("Robot disarmed after policy reset; beginning observation-only action probe")
+            if self.config.reset_robot:
+                logger.info("Robot disarmed after supervised reset; beginning action probe")
+            else:
+                logger.info("Robot remains in safe idle; beginning observation-only action probe")
         except BaseException:
             self._close_action_file()
             raise

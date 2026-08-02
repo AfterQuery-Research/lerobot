@@ -22,7 +22,7 @@ real robots.
 Strategies
 ----------
     --strategy.type=base       Autonomous rollout, no recording
-    --strategy.type=action_probe  Reset and inspect actions without executing them
+    --strategy.type=action_probe  Inspect actions without executing them
     --strategy.type=sentry     Continuous recording with auto-upload
     --strategy.type=highlight  Ring buffer + keystroke save
     --strategy.type=dagger     Human-in-the-loop (DAgger / RaC)

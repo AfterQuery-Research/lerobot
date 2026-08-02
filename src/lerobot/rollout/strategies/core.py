@@ -52,11 +52,13 @@ class RolloutStrategy(abc.ABC):
         self._warmup_flushed: bool = False
         self._cached_obs_processed: dict | None = None
 
-    def _init_engine(self, ctx: RolloutContext) -> None:
+    def _init_engine(self, ctx: RolloutContext, *, prepare_robot: bool = True) -> None:
         """Attach the inference engine and action interpolator, then start the backend.
 
         Creates an :class:`ActionInterpolator` from the config's
-        ``interpolation_multiplier`` and starts the inference engine.
+        ``interpolation_multiplier`` and starts the inference engine. When
+        ``prepare_robot`` is false, the robot remains unarmed and no policy-start
+        reset is commanded.
         Call this from ``setup()`` so strategies share identical
         initialisation without duplicating code.
         """
@@ -65,11 +67,14 @@ class RolloutStrategy(abc.ABC):
         logger.info("Starting inference engine...")
         self._engine.reset()
         self._engine.start()
-        arm = getattr(ctx.hardware.robot_wrapper.inner, "arm", None)
-        if callable(arm):
-            logger.info("Arming robot after inference startup checks...")
-            arm()
-        self._reset_robot_for_policy(ctx.hardware)
+        if prepare_robot:
+            arm = getattr(ctx.hardware.robot_wrapper.inner, "arm", None)
+            if callable(arm):
+                logger.info("Arming robot after inference startup checks...")
+                arm()
+            self._reset_robot_for_policy(ctx.hardware)
+        else:
+            logger.info("Inference engine started without arming or resetting the robot")
         self._warmup_flushed = False
         self._cached_obs_processed = None
         logger.info("Inference engine started")
@@ -151,9 +156,7 @@ class RolloutStrategy(abc.ABC):
                 logger.info("Returning robot to initial position before shutdown...")
                 self._return_to_initial_position(hw)
             elif not return_to_initial_position:
-                logger.info(
-                    "Skipping return-to-initial-position (disabled by config); leaving robot in final pose."
-                )
+                logger.info("Skipping return-to-initial-position; no return action will be sent.")
             if not inference_failed and callable(disarm):
                 try:
                     disarm()

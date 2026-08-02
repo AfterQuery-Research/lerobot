@@ -63,10 +63,12 @@ class BaseStrategyConfig(RolloutStrategyConfig):
 @RolloutStrategyConfig.register_subclass("action_probe")
 @dataclass
 class ActionProbeStrategyConfig(RolloutStrategyConfig):
-    """Reset hardware, inspect policy actions, and never dispatch them."""
+    """Inspect policy actions without dispatching them to the robot."""
 
     action_log_path: Path = Path("outputs/policy_action_probe.jsonl")
     console_log_interval_s: float = 1.0
+    # Keep the robot in safe idle by default. Enable only for a supervised reset test.
+    reset_robot: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.console_log_interval_s) or self.console_log_interval_s < 0:

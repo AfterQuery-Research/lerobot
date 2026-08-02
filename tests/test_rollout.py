@@ -67,7 +67,9 @@ def test_strategy_config_types():
         SentryStrategyConfig,
     )
 
-    assert ActionProbeStrategyConfig().type == "action_probe"
+    action_probe = ActionProbeStrategyConfig()
+    assert action_probe.type == "action_probe"
+    assert action_probe.reset_robot is False
     assert BaseStrategyConfig().type == "base"
     assert SentryStrategyConfig().type == "sentry"
     assert HighlightStrategyConfig().type == "highlight"
@@ -400,6 +402,88 @@ def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
 
     strategy._return_to_initial_position(hardware)
     assert events[-1] == "robot.reset"
+
+
+@pytest.mark.parametrize("reset_robot", [False, True])
+def test_action_probe_only_prepares_robot_when_explicitly_requested(tmp_path, reset_robot):
+    from lerobot.rollout import ActionProbeStrategyConfig
+    from lerobot.rollout.context import HardwareContext
+    from lerobot.rollout.robot_wrapper import ThreadSafeRobot
+    from lerobot.rollout.strategies.action_probe import ActionProbeStrategy
+
+    events = []
+    reset_position = {"joint.pos": 0.25}
+
+    class FakeEngine:
+        def reset(self):
+            events.append("engine.reset")
+
+        def start(self):
+            events.append("engine.start")
+
+    class ResettableRobot:
+        def arm(self):
+            events.append("robot.arm")
+
+        def disarm(self):
+            events.append("robot.disarm")
+
+        def reset_for_policy(self):
+            events.append("robot.reset")
+            return reset_position
+
+    hardware = HardwareContext(
+        robot_wrapper=ThreadSafeRobot(ResettableRobot()),
+        teleop=None,
+        initial_position={"joint.pos": -0.5},
+    )
+    ctx = SimpleNamespace(
+        runtime=SimpleNamespace(cfg=SimpleNamespace(interpolation_multiplier=1)),
+        policy=SimpleNamespace(inference=FakeEngine()),
+        hardware=hardware,
+    )
+    strategy = ActionProbeStrategy(
+        ActionProbeStrategyConfig(
+            action_log_path=tmp_path / "actions.jsonl",
+            reset_robot=reset_robot,
+        )
+    )
+
+    try:
+        strategy.setup(ctx)
+    finally:
+        strategy._close_action_file()
+
+    expected = ["engine.reset", "engine.start"]
+    if reset_robot:
+        expected.extend(["robot.arm", "robot.reset"])
+        assert hardware.initial_position == reset_position
+    else:
+        assert hardware.initial_position == {"joint.pos": -0.5}
+    expected.append("robot.disarm")
+    assert events == expected
+
+
+def test_send_next_action_can_discard_without_hardware_dispatch():
+    from lerobot.rollout.strategies import send_next_action
+    from lerobot.utils.action_interpolator import ActionInterpolator
+
+    interpolator = ActionInterpolator()
+    interpolator.add(torch.tensor([0.25, -0.5]))
+    robot_wrapper = MagicMock()
+    engine = MagicMock()
+    ctx = SimpleNamespace(
+        policy=SimpleNamespace(inference=engine),
+        data=SimpleNamespace(dataset_features={}, ordered_action_keys=["left.pos", "right.pos"]),
+        processors=SimpleNamespace(robot_action_processor=lambda pair: pair[0]),
+        hardware=SimpleNamespace(robot_wrapper=robot_wrapper),
+    )
+
+    action = send_next_action({}, {}, ctx, interpolator, execute=False)
+
+    assert action == {"left.pos": pytest.approx(0.25), "right.pos": pytest.approx(-0.5)}
+    robot_wrapper.send_action.assert_not_called()
+    engine.notify_action_sent.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
