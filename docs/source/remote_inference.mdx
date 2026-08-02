@@ -19,8 +19,10 @@ On a dual-YAM robot computer:
 uv sync --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
 ```
 
-The `bi_yam` extra pins the tested i2rt commit. Its native `ruckig` dependency
-uses the repository's `scikit-build-core` build constraint.
+The `bi_yam` extra pins the tested i2rt commit containing the multi-turn gripper
+encoder-wrap fix from
+[i2rt PR #82](https://github.com/i2rt-robotics/i2rt/pull/82). Its native
+`ruckig` dependency uses the repository's `scikit-build-core` build constraint.
 
 ## Start a MolmoAct2 server
 
@@ -110,8 +112,8 @@ The registered `afterquery_dual_yam` robot type provides typed defaults for the
 lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
 verified RealSense serials at 30 FPS (`top` at 640x480; `left` and `right` at
 640x360), per-tick deltas of 0.03 radians for joints and 0.03 normalized units
-for grippers, the lab's measured raw gripper endpoints canonicalized to the
-active encoder period, and a one-second command watchdog. The policy deltas
+for grippers, the lab's measured unwrapped raw gripper endpoints, and a
+one-second command watchdog. The policy deltas
 admit the released checkpoint's small absolute targets while operational joint
 and gripper bounds remain enforced. The watchdog
 allows for normal three-camera scheduling jitter but still puts both workers in

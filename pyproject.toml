@@ -197,7 +197,7 @@ reachy2 = [
 # leader (motorbridge-smart-servo / FashionStar UART servos).
 rebot = ["lerobot[motorbridge-dep]", "lerobot[motorbridge-smart-servo-dep]"]
 bi_yam = [
-    "i2rt @ git+https://github.com/i2rt-robotics/i2rt.git@26ffe68d3af91be2b9f0de04a79839983d2f3f5c",
+    "i2rt @ git+https://github.com/AfterQuery-Research/i2rt.git@e599e9db90d644db6efe0b16bb6fd7cb87c4272f",
 ]
 kinematics = ["lerobot[placo-dep]"]
 intelrealsense = [

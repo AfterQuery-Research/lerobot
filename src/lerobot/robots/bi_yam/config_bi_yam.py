@@ -265,7 +265,7 @@ def _afterquery_cameras() -> dict[str, CameraConfig]:
 class AfterQueryLeftYAMArmConfig(YAMArmConfig):
     channel: str = "can_yam_new"
     gripper_limits_override: tuple[float, float] | None = (
-        0.08726559691746161,
+        6.370450904097048,
         1.223964293888761,
     )
     command_ttl_s: float = 1.0
@@ -275,7 +275,7 @@ class AfterQueryLeftYAMArmConfig(YAMArmConfig):
 class AfterQueryRightYAMArmConfig(YAMArmConfig):
     channel: str = "can_yam_old"
     gripper_limits_override: tuple[float, float] | None = (
-        0.11358740968926284,
+        6.396772716868849,
         1.2010757610437164,
     )
     command_ttl_s: float = 1.0

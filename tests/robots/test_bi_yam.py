@@ -299,11 +299,11 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.left_arm_config.command_ttl_s == 1.0
     assert config.right_arm_config.command_ttl_s == 1.0
     assert config.left_arm_config.gripper_limits_override == (
-        0.08726559691746161,
+        6.370450904097048,
         1.223964293888761,
     )
     assert config.right_arm_config.gripper_limits_override == (
-        0.11358740968926284,
+        6.396772716868849,
         1.2010757610437164,
     )
     assert not config.left_arm_config.allow_gripper_calibration

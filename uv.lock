@@ -2210,7 +2210,7 @@ wheels = [
 [[package]]
 name = "i2rt"
 version = "1.1.2"
-source = { git = "https://github.com/i2rt-robotics/i2rt.git?rev=26ffe68d3af91be2b9f0de04a79839983d2f3f5c#26ffe68d3af91be2b9f0de04a79839983d2f3f5c" }
+source = { git = "https://github.com/AfterQuery-Research/i2rt.git?rev=e599e9db90d644db6efe0b16bb6fd7cb87c4272f#e599e9db90d644db6efe0b16bb6fd7cb87c4272f" }
 dependencies = [
     { name = "click" },
     { name = "crcmod-plus" },
@@ -3416,7 +3416,7 @@ requires-dist = [
     { name = "hf-libero", marker = "sys_platform == 'linux' and extra == 'libero'", specifier = ">=0.1.4,<0.2.0" },
     { name = "hidapi", marker = "extra == 'gamepad'", specifier = ">=0.14.0,<0.15.0" },
     { name = "huggingface-hub", specifier = ">=1.6.0,<2.0.0" },
-    { name = "i2rt", marker = "extra == 'bi-yam'", git = "https://github.com/i2rt-robotics/i2rt.git?rev=26ffe68d3af91be2b9f0de04a79839983d2f3f5c" },
+    { name = "i2rt", marker = "extra == 'bi-yam'", git = "https://github.com/AfterQuery-Research/i2rt.git?rev=e599e9db90d644db6efe0b16bb6fd7cb87c4272f" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.0.0,<7.0.0" },
     { name = "jsonlines", marker = "extra == 'dataset'", specifier = ">=4.0.0,<5.0.0" },
     { name = "jupyter", marker = "extra == 'notebook'", specifier = ">=1.0.0,<2.0.0" },
