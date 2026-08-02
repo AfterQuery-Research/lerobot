@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Literal
 
 from lerobot.cameras import CameraConfig
-from lerobot.cameras.realsense import RealSenseCameraConfig
 
 from ..config import RobotConfig
 
@@ -31,33 +30,7 @@ YAM_SCALAR_KEYS = (
     "right_gripper.pos",
 )
 
-MOLMOACT2_YAM_LEFT_START_POSITION = (
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-)
-MOLMOACT2_YAM_RIGHT_START_POSITION = (
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-)
-MOLMOACT2_BIMANUAL_YAM_START_POSITION = (
-    *MOLMOACT2_YAM_LEFT_START_POSITION,
-    *MOLMOACT2_YAM_RIGHT_START_POSITION,
-)
-AFTERQUERY_BIMANUAL_YAM_START_POSITION = (
-    *MOLMOACT2_YAM_LEFT_START_POSITION,
-    *MOLMOACT2_YAM_RIGHT_START_POSITION[:6],
-    1.0,
-)
+BI_YAM_POLICY_START_POSITION = (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0)
 
 
 def _default_joint_limits() -> list[tuple[float, float]]:
@@ -103,20 +76,31 @@ class YAMGripperCalibration:
 
 @dataclass(kw_only=True)
 class YAMArmConfig:
-    channel: str
+    # Prefer adapter_serial for portable physical setups. channel remains available for
+    # simulations and advanced installations with externally managed interface names.
+    adapter_serial: str | None = None
+    channel: str | None = None
     arm_type: str = "yam"
     gripper_type: str = "linear_4310"
     # Raw i2rt [closed, open] endpoints. Supplying these skips moving calibration.
     gripper_limits_override: tuple[float, float] | None = None
     allow_gripper_calibration: bool = False
     sim: bool = False
-    command_ttl_s: float = 0.2
+    command_ttl_s: float = 1.0
     worker_poll_interval_s: float = 0.004
     enable_auto_recovery: bool = False
 
     def __post_init__(self) -> None:
-        if not self.channel:
-            raise ValueError("channel must not be empty")
+        if self.adapter_serial is not None:
+            self.adapter_serial = self.adapter_serial.strip()
+            if not self.adapter_serial:
+                raise ValueError("adapter_serial must not be empty")
+        if self.channel is not None:
+            self.channel = self.channel.strip()
+            if not self.channel:
+                raise ValueError("channel must not be empty")
+        if self.adapter_serial is not None and self.channel is not None:
+            raise ValueError("adapter_serial and channel are mutually exclusive")
         if not math.isfinite(self.command_ttl_s) or self.command_ttl_s <= 0:
             raise ValueError("command_ttl_s must be positive")
         if not math.isfinite(self.worker_poll_interval_s) or self.worker_poll_interval_s <= 0:
@@ -137,9 +121,12 @@ class YAMArmConfig:
         )
 
     def validate_hardware_startup(self) -> None:
+        if not self.sim and self.adapter_serial is None and self.channel is None:
+            raise RuntimeError("set adapter_serial (recommended) or channel for this physical YAM arm")
         if not self.has_fixed_gripper_calibration and not self.allow_gripper_calibration:
+            identity = self.adapter_serial or self.channel or "unconfigured arm"
             raise RuntimeError(
-                f"Refusing to open {self.channel}: gripper {self.gripper_type!r} needs raw "
+                f"Refusing to open {identity}: gripper {self.gripper_type!r} needs raw "
                 "[closed, open] limits. Set gripper_limits_override, or explicitly set "
                 "allow_gripper_calibration=true for a supervised calibration that moves the gripper."
             )
@@ -148,9 +135,9 @@ class YAMArmConfig:
 @RobotConfig.register_subclass("bi_yam_follower")
 @dataclass(kw_only=True)
 class BiYAMFollowerConfig(RobotConfig):
-    id: str | None = "bi_yam_follower"
-    left_arm_config: YAMArmConfig = field(default_factory=lambda: YAMArmConfig(channel="can0"))
-    right_arm_config: YAMArmConfig = field(default_factory=lambda: YAMArmConfig(channel="can1"))
+    id: str | None = None
+    left_arm_config: YAMArmConfig = field(default_factory=YAMArmConfig)
+    right_arm_config: YAMArmConfig = field(default_factory=YAMArmConfig)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     # Set only while running lerobot-calibrate for one arm. Normal rollout leaves this unset.
     calibration_side: Literal["left", "right"] | None = None
@@ -166,22 +153,45 @@ class BiYAMFollowerConfig(RobotConfig):
     gripper_limits: tuple[float, float] = (0.0, 1.0)
     gripper_state_tolerance: float = 0.15
     max_joint_delta: float = 0.1
-    max_gripper_delta: float = 0.1
+    max_gripper_delta: float = 0.03
     control_telemetry_path: Path | None = None
     control_telemetry_console_interval_s: float = 1.0
 
     # A configured pose is reached before policy control and between policy episodes.
-    policy_start_position: tuple[float, ...] | None = None
+    policy_start_position: tuple[float, ...] | None = BI_YAM_POLICY_START_POSITION
     policy_reset_step_size: float = 0.01
     policy_reset_max_steps: int = 100
     policy_reset_fps: float = 30.0
-    policy_reset_tolerance: float = 0.01
+    policy_reset_tolerance: float = 0.035
     policy_reset_timeout_s: float = 30.0
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.id is None or not self.id.strip():
+            raise ValueError("--robot.id is required for a physical bi_yam_follower")
+        self.id = self.id.strip()
         if self.calibration_side not in (None, "left", "right"):
             raise ValueError("calibration_side must be left, right, or unset")
+        required_sides = (self.calibration_side,) if self.calibration_side is not None else ("left", "right")
+        for side in required_sides:
+            arm_config = getattr(self, f"{side}_arm_config")
+            if not arm_config.sim and arm_config.adapter_serial is None and arm_config.channel is None:
+                raise ValueError(
+                    f"--robot.{side}_arm_config.adapter_serial is required for a physical YAM arm "
+                    f"(or set --robot.{side}_arm_config.channel for an externally named interface)"
+                )
+        if (
+            self.left_arm_config.adapter_serial is not None
+            and self.right_arm_config.adapter_serial is not None
+            and self.left_arm_config.adapter_serial.casefold()
+            == self.right_arm_config.adapter_serial.casefold()
+        ):
+            raise ValueError("left and right YAM arms must use different adapter_serial values")
+        if (
+            self.left_arm_config.channel is not None
+            and self.left_arm_config.channel == self.right_arm_config.channel
+        ):
+            raise ValueError("left and right YAM arms must use different channel values")
         for name in (
             "startup_timeout_s",
             "state_timeout_s",
@@ -239,51 +249,3 @@ class BiYAMFollowerConfig(RobotConfig):
                     "policy_start_position is outside operational limits for " + ", ".join(out_of_bounds)
                 )
             self.policy_start_position = values
-
-
-def _afterquery_camera(serial_number: str, *, height: int) -> RealSenseCameraConfig:
-    return RealSenseCameraConfig(
-        serial_number_or_name=serial_number,
-        width=640,
-        height=height,
-        fps=30,
-        use_rgb=True,
-        use_depth=False,
-        warmup_s=2,
-    )
-
-
-def _afterquery_cameras() -> dict[str, CameraConfig]:
-    return {
-        "top": _afterquery_camera("262422074066", height=480),
-        "left": _afterquery_camera("323622270338", height=360),
-        "right": _afterquery_camera("323622270243", height=360),
-    }
-
-
-@dataclass(kw_only=True)
-class AfterQueryLeftYAMArmConfig(YAMArmConfig):
-    channel: str = "can_yam_new"
-    command_ttl_s: float = 1.0
-
-
-@dataclass(kw_only=True)
-class AfterQueryRightYAMArmConfig(YAMArmConfig):
-    channel: str = "can_yam_old"
-    command_ttl_s: float = 1.0
-
-
-@RobotConfig.register_subclass("afterquery_dual_yam")
-@dataclass(kw_only=True)
-class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
-    """Typed defaults for the dual-YAM installation in the AfterQuery lab."""
-
-    # Stable physical-device ID used to select the local calibration JSON.
-    id: str | None = "afterquery_dual_yam"
-    left_arm_config: AfterQueryLeftYAMArmConfig = field(default_factory=AfterQueryLeftYAMArmConfig)
-    right_arm_config: AfterQueryRightYAMArmConfig = field(default_factory=AfterQueryRightYAMArmConfig)
-    cameras: dict[str, CameraConfig] = field(default_factory=_afterquery_cameras)
-    max_joint_delta: float = 0.1
-    max_gripper_delta: float = 0.03
-    policy_start_position: tuple[float, ...] | None = AFTERQUERY_BIMANUAL_YAM_START_POSITION
-    policy_reset_tolerance: float = 0.035

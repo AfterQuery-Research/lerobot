@@ -14,16 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .bi_yam import AfterQueryDualYAM, BiYAMFollower
+from .bi_yam import BiYAMFollower
 from .config_bi_yam import (
-    AFTERQUERY_BIMANUAL_YAM_START_POSITION,
-    MOLMOACT2_BIMANUAL_YAM_START_POSITION,
-    MOLMOACT2_YAM_LEFT_START_POSITION,
-    MOLMOACT2_YAM_RIGHT_START_POSITION,
+    BI_YAM_POLICY_START_POSITION,
     YAM_SCALAR_KEYS,
-    AfterQueryDualYAMConfig,
-    AfterQueryLeftYAMArmConfig,
-    AfterQueryRightYAMArmConfig,
     BiYAMFollowerConfig,
     YAMArmConfig,
     YAMGripperCalibration,
@@ -31,18 +25,11 @@ from .config_bi_yam import (
 from .sim_bi_yam import BiYAMSimulatorRobot, BiYAMSimulatorRobotConfig
 
 __all__ = [
-    "AFTERQUERY_BIMANUAL_YAM_START_POSITION",
-    "AfterQueryDualYAM",
-    "AfterQueryDualYAMConfig",
-    "AfterQueryLeftYAMArmConfig",
-    "AfterQueryRightYAMArmConfig",
+    "BI_YAM_POLICY_START_POSITION",
     "BiYAMFollower",
     "BiYAMFollowerConfig",
     "BiYAMSimulatorRobot",
     "BiYAMSimulatorRobotConfig",
-    "MOLMOACT2_BIMANUAL_YAM_START_POSITION",
-    "MOLMOACT2_YAM_LEFT_START_POSITION",
-    "MOLMOACT2_YAM_RIGHT_START_POSITION",
     "YAMArmConfig",
     "YAMGripperCalibration",
     "YAM_SCALAR_KEYS",

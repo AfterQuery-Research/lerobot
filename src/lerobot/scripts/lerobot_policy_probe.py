@@ -33,8 +33,7 @@ import draccus
 import numpy as np
 from PIL import Image
 
-from lerobot.cameras import Camera, ColorMode, make_cameras_from_configs
-from lerobot.cameras.realsense import RealSenseCameraConfig
+from lerobot.cameras import Camera, CameraConfig, make_cameras_from_configs
 from lerobot.remote_inference import (
     CameraSpec,
     EmbodimentManifest,
@@ -54,43 +53,19 @@ YAM_FEATURES = (
     "right_gripper.pos",
 )
 
-AFTERQUERY_CAMERA_SERIALS = {
-    "top": "262422074066",
-    "left": "323622270338",
-    "right": "323622270243",
-}
-
-AFTERQUERY_CAMERA_HEIGHTS = {
-    "top": 480,
-    "left": 360,
-    "right": 360,
-}
-
-
-def _default_cameras() -> dict[str, RealSenseCameraConfig]:
-    return {
-        name: RealSenseCameraConfig(
-            serial_number_or_name=serial,
-            width=640,
-            height=AFTERQUERY_CAMERA_HEIGHTS[name],
-            fps=30,
-            color_mode=ColorMode.RGB,
-            use_rgb=True,
-            use_depth=False,
-            warmup_s=2,
-        )
-        for name, serial in AFTERQUERY_CAMERA_SERIALS.items()
-    }
+YAM_CAMERA_KEYS = ("top", "left", "right")
 
 
 @dataclass
 class PolicyProbeConfig:
     server_address: str = "127.0.0.1:8081"
+    robot_id: str = ""
+    robot_type: str = "bi_yam_follower"
     task: str = ""
     state: list[float] = field(default_factory=list)
     state_source: str = ""
     output_dir: Path = Path("outputs/policy_probe")
-    cameras: dict[str, RealSenseCameraConfig] = field(default_factory=_default_cameras)
+    cameras: dict[str, CameraConfig] = field(default_factory=dict)
     schema_id: str = "molmoact2-bimanual-yam-observation-probe-v1"
     connect_timeout_s: float = 180.0
     inference_timeout_s: float = 180.0
@@ -100,6 +75,10 @@ class PolicyProbeConfig:
     def validate(self) -> None:
         if not self.server_address.strip():
             raise ValueError("server_address must not be empty")
+        if not self.robot_id.strip():
+            raise ValueError("robot_id must not be empty")
+        if not self.robot_type.strip():
+            raise ValueError("robot_type must not be empty")
         if not self.task.strip():
             raise ValueError("task must not be empty")
         if len(self.state) != len(YAM_FEATURES):
@@ -108,7 +87,7 @@ class PolicyProbeConfig:
             raise ValueError("state values must be finite")
         if not self.state_source.strip():
             raise ValueError("state_source must describe where the supplied state came from")
-        if tuple(self.cameras) != tuple(AFTERQUERY_CAMERA_SERIALS):
+        if tuple(self.cameras) != YAM_CAMERA_KEYS:
             raise ValueError("cameras must be ordered as top, left, right")
         if self.connect_timeout_s <= 0 or self.inference_timeout_s <= 0:
             raise ValueError("timeouts must be positive")
@@ -129,12 +108,12 @@ class PolicyProbeResult:
     actions_discarded: bool = True
 
 
-CameraFactory = Callable[[dict[str, RealSenseCameraConfig]], dict[str, Camera]]
+CameraFactory = Callable[[dict[str, CameraConfig]], dict[str, Camera]]
 ClientFactory = Callable[[RemotePolicyClientConfig], RemotePolicyClient]
 
 
 def _capture_frames(
-    configs: dict[str, RealSenseCameraConfig],
+    configs: dict[str, CameraConfig],
     *,
     camera_factory: CameraFactory,
 ) -> dict[str, np.ndarray]:
@@ -169,8 +148,8 @@ def _manifest(cfg: PolicyProbeConfig) -> EmbodimentManifest:
     )
     return EmbodimentManifest(
         schema_id=cfg.schema_id,
-        robot_id="afterquery-dual-yam-observation-probe",
-        robot_type="afterquery_dual_yam",
+        robot_id=cfg.robot_id,
+        robot_type=cfg.robot_type,
         control_hz=30.0,
         state_features=YAM_FEATURES,
         action_features=YAM_FEATURES,
@@ -265,6 +244,8 @@ def run_policy_probe(
     report = {
         "probe": {
             "server_address": cfg.server_address,
+            "robot_id": cfg.robot_id,
+            "robot_type": cfg.robot_type,
             "task": cfg.task,
             "state_source": cfg.state_source,
             "state_features": list(YAM_FEATURES),

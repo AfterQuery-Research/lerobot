@@ -28,12 +28,17 @@ import numpy as np
 
 from lerobot.cameras import Camera, make_cameras_from_configs
 from lerobot.lerobot_types import RobotAction, RobotObservation
+from lerobot.utils.can import (
+    CANInterfaceInfo,
+    can_interface_readiness_error,
+    discover_can_interfaces,
+    resolve_can_interface,
+)
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 from ..robot import Robot
 from .config_bi_yam import (
     YAM_SCALAR_KEYS,
-    AfterQueryDualYAMConfig,
     BiYAMFollowerConfig,
     YAMArmConfig,
     YAMGripperCalibration,
@@ -44,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 WorkerFactory = Callable[[str, YAMArmConfig], ArmWorker]
 CameraFactory = Callable[[dict[str, Any]], dict[str, Camera]]
+CANDiscovery = Callable[[], list[CANInterfaceInfo]]
 
 
 class BiYAMFollower(Robot):
@@ -58,6 +64,7 @@ class BiYAMFollower(Robot):
         *,
         worker_factory: WorkerFactory | None = None,
         camera_factory: CameraFactory | None = None,
+        can_discovery: CANDiscovery = discover_can_interfaces,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ):
         self._yam_calibration: dict[str, YAMGripperCalibration] = {}
@@ -65,6 +72,7 @@ class BiYAMFollower(Robot):
         self.config = config
         self._arm_configs = self._resolve_arm_configs()
         self._worker_factory = worker_factory or (lambda side, cfg: ProcessArmWorker(side, cfg))
+        self._can_discovery = can_discovery
         self._monotonic_ns = monotonic_ns
         self.cameras = (camera_factory or make_cameras_from_configs)(config.cameras)
         self._workers: dict[str, ArmWorker] = {}
@@ -124,6 +132,8 @@ class BiYAMFollower(Robot):
                     f"--robot.id={self.id} --robot.calibration_side={side} "
                     f"--robot.{side}_arm_config.allow_gripper_calibration=true` under supervision."
                 ) from exc
+
+        arm_configs = self._resolve_hardware_channels(arm_configs)
 
         self._workers = {}
         try:
@@ -474,6 +484,56 @@ class BiYAMFollower(Robot):
             )
         return {calibration_side: arm_config}
 
+    def _resolve_hardware_channels(self, arm_configs: dict[str, YAMArmConfig]) -> dict[str, YAMArmConfig]:
+        if not any(config.adapter_serial is not None for config in arm_configs.values()):
+            return dict(arm_configs)
+
+        interfaces = self._can_discovery()
+        resolved: dict[str, YAMArmConfig] = {}
+        readiness_errors = []
+        for side, arm_config in arm_configs.items():
+            if arm_config.adapter_serial is None:
+                resolved[side] = arm_config
+                continue
+
+            interface = resolve_can_interface(arm_config.adapter_serial, interfaces=interfaces)
+            readiness_error = can_interface_readiness_error(
+                interface,
+                bitrate=1_000_000,
+                use_fd=False,
+            )
+            if readiness_error is not None:
+                readiness_errors.append(
+                    f"{side} adapter {arm_config.adapter_serial} resolved to {interface.name}: "
+                    f"{readiness_error}"
+                )
+            logger.info(
+                "Resolved %s YAM CAN adapter %s to %s",
+                side,
+                arm_config.adapter_serial,
+                interface.name,
+            )
+            resolved[side] = replace(arm_config, adapter_serial=None, channel=interface.name)
+
+        channels = [config.channel for config in resolved.values() if config.channel is not None]
+        if len(channels) != len(set(channels)):
+            raise RuntimeError("Left and right YAM adapters resolved to the same SocketCAN interface")
+        if readiness_errors:
+            setup_flags = " ".join(
+                f"--{side}_adapter_serial={config.adapter_serial}"
+                for side, config in (
+                    ("left", self.config.left_arm_config),
+                    ("right", self.config.right_arm_config),
+                )
+                if config.adapter_serial is not None
+            )
+            raise RuntimeError(
+                "SocketCAN is not ready:\n- "
+                + "\n- ".join(readiness_errors)
+                + f"\nRun `lerobot-setup-can {setup_flags}` before connecting the robot."
+            )
+        return resolved
+
     def _load_calibration(self, fpath: Path | None = None) -> None:
         fpath = self.calibration_fpath if fpath is None else fpath
         with open(fpath) as calibration_file, draccus.config_type("json"):
@@ -615,10 +675,3 @@ class BiYAMFollower(Robot):
             except Exception as exc:
                 errors.append(f"{side} arm: {exc}")
         return errors
-
-
-class AfterQueryDualYAM(BiYAMFollower):
-    """The dual-YAM installation attached to the AfterQuery Raspberry Pi client."""
-
-    config_class = AfterQueryDualYAMConfig
-    name = "afterquery_dual_yam"

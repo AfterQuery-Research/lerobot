@@ -28,13 +28,8 @@ import numpy as np
 import pytest
 
 from lerobot.robots.bi_yam import (
-    AFTERQUERY_BIMANUAL_YAM_START_POSITION,
-    MOLMOACT2_BIMANUAL_YAM_START_POSITION,
-    MOLMOACT2_YAM_LEFT_START_POSITION,
-    MOLMOACT2_YAM_RIGHT_START_POSITION,
+    BI_YAM_POLICY_START_POSITION,
     YAM_SCALAR_KEYS,
-    AfterQueryDualYAM,
-    AfterQueryDualYAMConfig,
     BiYAMFollower,
     BiYAMFollowerConfig,
     YAMArmConfig,
@@ -50,6 +45,7 @@ from lerobot.robots.bi_yam.worker import (
 )
 from lerobot.robots.utils import make_robot_from_config
 from lerobot.scripts.lerobot_calibrate import CalibrateConfig
+from lerobot.utils.can import CANInterfaceInfo
 
 
 class FakeBackend:
@@ -236,6 +232,7 @@ class FakeCamera:
 
 def make_config(tmp_path, **overrides) -> BiYAMFollowerConfig:
     values = {
+        "id": "test_yam",
         "calibration_dir": tmp_path,
         "left_arm_config": YAMArmConfig(channel="can0", sim=True),
         "right_arm_config": YAMArmConfig(channel="can1", sim=True),
@@ -249,7 +246,7 @@ def make_config(tmp_path, **overrides) -> BiYAMFollowerConfig:
     return BiYAMFollowerConfig(**values)
 
 
-def make_robot(tmp_path, *, config=None, cameras=None, worker_options=None):
+def make_robot(tmp_path, *, config=None, cameras=None, worker_options=None, can_discovery=None):
     workers: dict[str, FakeWorker] = {}
     worker_options = worker_options or {}
 
@@ -263,6 +260,7 @@ def make_robot(tmp_path, *, config=None, cameras=None, worker_options=None):
         config or make_config(tmp_path),
         worker_factory=worker_factory,
         camera_factory=lambda _configs: cameras,
+        **({"can_discovery": can_discovery} if can_discovery is not None else {}),
     )
     return robot, workers
 
@@ -289,13 +287,20 @@ def test_standard_robot_factory_discovers_bi_yam_without_i2rt(tmp_path):
     assert not robot.is_connected
 
 
-def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_path, monkeypatch):
-    config = AfterQueryDualYAMConfig(calibration_dir=tmp_path)
+def test_generic_config_has_portable_tested_defaults_and_factory_support(tmp_path, monkeypatch):
+    config = BiYAMFollowerConfig(
+        id="lab_yam",
+        calibration_dir=tmp_path,
+        left_arm_config=YAMArmConfig(adapter_serial="LEFT"),
+        right_arm_config=YAMArmConfig(adapter_serial="RIGHT"),
+    )
 
-    assert config.type == "afterquery_dual_yam"
-    assert config.id == "afterquery_dual_yam"
-    assert config.left_arm_config.channel == "can_yam_new"
-    assert config.right_arm_config.channel == "can_yam_old"
+    assert config.type == "bi_yam_follower"
+    assert config.id == "lab_yam"
+    assert config.left_arm_config.adapter_serial == "LEFT"
+    assert config.right_arm_config.adapter_serial == "RIGHT"
+    assert config.left_arm_config.channel is None
+    assert config.right_arm_config.channel is None
     assert config.left_arm_config.command_ttl_s == 1.0
     assert config.right_arm_config.command_ttl_s == 1.0
     assert config.left_arm_config.gripper_limits_override is None
@@ -305,79 +310,147 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.calibration_side is None
     assert config.max_joint_delta == 0.1
     assert config.max_gripper_delta == 0.03
-    assert MOLMOACT2_YAM_LEFT_START_POSITION[:6] == (0.0,) * 6
-    assert MOLMOACT2_YAM_RIGHT_START_POSITION[:6] == (0.0,) * 6
-    assert MOLMOACT2_YAM_LEFT_START_POSITION[6] == 1.0
-    assert MOLMOACT2_YAM_RIGHT_START_POSITION[6] == 0.0
-    assert (
-        *MOLMOACT2_YAM_LEFT_START_POSITION,
-        *MOLMOACT2_YAM_RIGHT_START_POSITION,
-    ) == MOLMOACT2_BIMANUAL_YAM_START_POSITION
-    assert (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0) == AFTERQUERY_BIMANUAL_YAM_START_POSITION
-    assert config.policy_start_position == AFTERQUERY_BIMANUAL_YAM_START_POSITION
+    assert (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0) == BI_YAM_POLICY_START_POSITION
+    assert config.policy_start_position == BI_YAM_POLICY_START_POSITION
     assert config.policy_reset_step_size == 0.01
     assert config.policy_reset_max_steps == 100
     assert config.policy_reset_fps == 30
     assert config.policy_reset_tolerance == 0.035
     assert config.policy_reset_timeout_s == 30
     assert config.gripper_state_tolerance == 0.15
-    assert list(config.cameras) == ["top", "left", "right"]
-    assert {name: camera.serial_number_or_name for name, camera in config.cameras.items()} == {
-        "top": "262422074066",
-        "left": "323622270338",
-        "right": "323622270243",
-    }
-    assert all(camera.type == "intelrealsense" for camera in config.cameras.values())
-    assert {
-        name: (camera.width, camera.height, camera.fps, camera.use_rgb, camera.use_depth, camera.warmup_s)
-        for name, camera in config.cameras.items()
-    } == {
-        "top": (640, 480, 30, True, False, 2),
-        "left": (640, 360, 30, True, False, 2),
-        "right": (640, 360, 30, True, False, 2),
-    }
+    assert config.cameras == {}
 
     monkeypatch.setattr("lerobot.robots.bi_yam.bi_yam.make_cameras_from_configs", lambda _configs: {})
     robot = make_robot_from_config(config)
 
-    assert isinstance(robot, AfterQueryDualYAM)
-    assert robot.calibration_fpath == tmp_path / "afterquery_dual_yam.json"
+    assert isinstance(robot, BiYAMFollower)
+    assert robot.calibration_fpath == tmp_path / "lab_yam.json"
     assert not robot.is_calibrated
 
 
-def test_afterquery_rollout_requires_id_scoped_calibration_before_worker_creation(tmp_path):
+def test_generic_rollout_requires_id_scoped_calibration_before_worker_creation(tmp_path):
     created_workers = []
-    config = AfterQueryDualYAMConfig(calibration_dir=tmp_path)
-    robot = AfterQueryDualYAM(
+    config = BiYAMFollowerConfig(
+        id="lab_yam",
+        calibration_dir=tmp_path,
+        left_arm_config=YAMArmConfig(adapter_serial="LEFT"),
+        right_arm_config=YAMArmConfig(adapter_serial="RIGHT"),
+    )
+    robot = BiYAMFollower(
         config,
         worker_factory=lambda side, arm_config: created_workers.append((side, arm_config)),
         camera_factory=lambda _configs: {},
     )
 
-    with pytest.raises(RuntimeError, match=str(tmp_path / "afterquery_dual_yam.json")):
+    with pytest.raises(RuntimeError, match=str(tmp_path / "lab_yam.json")):
         robot.connect()
 
     assert created_workers == []
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
-def test_afterquery_calibration_cli_keeps_nested_hardware_defaults(side):
+def test_generic_calibration_cli_accepts_runtime_adapter_serial(side):
     config = draccus.parse(
         CalibrateConfig,
         args=[
-            "--robot.type=afterquery_dual_yam",
-            "--robot.id=afterquery_dual_yam",
+            "--robot.type=bi_yam_follower",
+            "--robot.id=lab_yam",
+            "--robot.left_arm_config.adapter_serial=LEFT",
+            "--robot.right_arm_config.adapter_serial=RIGHT",
             f"--robot.calibration_side={side}",
             f"--robot.{side}_arm_config.allow_gripper_calibration=true",
         ],
     )
 
-    assert isinstance(config.robot, AfterQueryDualYAMConfig)
-    assert config.robot.left_arm_config.channel == "can_yam_new"
-    assert config.robot.right_arm_config.channel == "can_yam_old"
+    assert isinstance(config.robot, BiYAMFollowerConfig)
+    assert config.robot.left_arm_config.adapter_serial == "LEFT"
+    assert config.robot.right_arm_config.adapter_serial == "RIGHT"
     assert config.robot.calibration_side == side
     assert getattr(config.robot, f"{side}_arm_config").gripper_limits_override is None
     assert getattr(config.robot, f"{side}_arm_config").allow_gripper_calibration
+
+
+def test_generic_config_requires_runtime_robot_id():
+    with pytest.raises(ValueError, match="--robot.id is required"):
+        BiYAMFollowerConfig(
+            left_arm_config=YAMArmConfig(adapter_serial="LEFT"),
+            right_arm_config=YAMArmConfig(adapter_serial="RIGHT"),
+        )
+
+
+def test_generic_config_requires_runtime_hardware_identity():
+    with pytest.raises(ValueError, match="left_arm_config.adapter_serial"):
+        BiYAMFollowerConfig(id="lab_yam")
+
+    left_calibration = BiYAMFollowerConfig(
+        id="lab_yam",
+        calibration_side="left",
+        left_arm_config=YAMArmConfig(adapter_serial="LEFT", allow_gripper_calibration=True),
+    )
+    assert left_calibration.right_arm_config.adapter_serial is None
+
+
+def test_connect_resolves_adapter_serials_to_current_socketcan_names(tmp_path):
+    gripper_limits = (1.0, 0.0)
+    config = BiYAMFollowerConfig(
+        id="lab_yam",
+        calibration_dir=tmp_path,
+        left_arm_config=YAMArmConfig(
+            adapter_serial="LEFT",
+            gripper_limits_override=gripper_limits,
+        ),
+        right_arm_config=YAMArmConfig(
+            adapter_serial="RIGHT",
+            gripper_limits_override=gripper_limits,
+        ),
+    )
+    interfaces = [
+        CANInterfaceInfo("can0", "RIGHT", "gs_usb", True, 1_000_000, False),
+        CANInterfaceInfo("can1", "LEFT", "gs_usb", True, 1_000_000, False),
+    ]
+    robot, workers = make_robot(tmp_path, config=config, can_discovery=lambda: interfaces)
+
+    robot.connect()
+
+    assert workers["left"].config.channel == "can1"
+    assert workers["right"].config.channel == "can0"
+    assert workers["left"].config.adapter_serial is None
+    assert workers["right"].config.adapter_serial is None
+    robot.disconnect()
+
+
+def test_connect_rejects_unprepared_serial_selected_can_before_worker_creation(tmp_path):
+    created_workers = []
+    gripper_limits = (1.0, 0.0)
+    config = BiYAMFollowerConfig(
+        id="lab_yam",
+        calibration_dir=tmp_path,
+        left_arm_config=YAMArmConfig(
+            adapter_serial="LEFT",
+            gripper_limits_override=gripper_limits,
+        ),
+        right_arm_config=YAMArmConfig(
+            adapter_serial="RIGHT",
+            gripper_limits_override=gripper_limits,
+        ),
+    )
+    interfaces = [
+        CANInterfaceInfo("can0", "RIGHT", "gs_usb", False, None, False),
+        CANInterfaceInfo("can1", "LEFT", "gs_usb", False, None, False),
+    ]
+    robot = BiYAMFollower(
+        config,
+        worker_factory=lambda side, arm_config: created_workers.append((side, arm_config)),
+        camera_factory=lambda _configs: {},
+        can_discovery=lambda: interfaces,
+    )
+
+    with pytest.raises(RuntimeError, match="lerobot-setup-can") as exc_info:
+        robot.connect()
+
+    assert "--left_adapter_serial=LEFT" in str(exc_info.value)
+    assert "--right_adapter_serial=RIGHT" in str(exc_info.value)
+    assert created_workers == []
 
 
 def test_calibration_status_reflects_fixed_gripper_limits(tmp_path):
@@ -661,7 +734,7 @@ def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):
 
 
 def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_path):
-    target = AFTERQUERY_BIMANUAL_YAM_START_POSITION
+    target = BI_YAM_POLICY_START_POSITION
     telemetry_path = tmp_path / "reset-control.jsonl"
     config = make_config(
         tmp_path,
@@ -731,7 +804,7 @@ def test_policy_reset_timeout_disarms_both_workers(tmp_path):
 
 
 def test_policy_reset_is_a_noop_without_configured_pose(tmp_path):
-    robot, workers = make_robot(tmp_path)
+    robot, workers = make_robot(tmp_path, config=make_config(tmp_path, policy_start_position=None))
     robot.connect()
     robot.arm()
 

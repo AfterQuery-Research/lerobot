@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from lerobot.cameras.realsense import RealSenseCameraConfig
 from lerobot.remote_inference.schema import ModelManifest, PolicyActionChunk
 from lerobot.scripts import lerobot_policy_probe as probe_module
 
@@ -70,7 +71,7 @@ class FakeClient:
             action_dim=14,
             state_features=probe_module.YAM_FEATURES,
             action_features=probe_module.YAM_FEATURES,
-            camera_keys=tuple(probe_module.AFTERQUERY_CAMERA_SERIALS),
+            camera_keys=probe_module.YAM_CAMERA_KEYS,
             fingerprint="fake-fingerprint",
         )
         model.assert_compatible(embodiment)
@@ -90,16 +91,40 @@ class FakeClient:
 def _config(tmp_path):
     return probe_module.PolicyProbeConfig(
         server_address="127.0.0.1:8081",
+        robot_id="lab-yam",
         task="pick up the object",
         state=[0.0] * 14,
         state_source="unit-test",
         output_dir=tmp_path,
+        cameras={
+            "top": RealSenseCameraConfig(
+                serial_number_or_name="TOP",
+                width=640,
+                height=480,
+                fps=30,
+                use_depth=False,
+            ),
+            "left": RealSenseCameraConfig(
+                serial_number_or_name="LEFT",
+                width=640,
+                height=360,
+                fps=30,
+                use_depth=False,
+            ),
+            "right": RealSenseCameraConfig(
+                serial_number_or_name="RIGHT",
+                width=640,
+                height=360,
+                fps=30,
+                use_depth=False,
+            ),
+        },
     )
 
 
 def test_probe_captures_once_and_discards_actions(tmp_path):
     FakeClient.instances.clear()
-    configs = probe_module._default_cameras()
+    configs = _config(tmp_path).cameras
     cameras = {
         name: FakeCamera(index, height=int(config.height), width=int(config.width))
         for index, (name, config) in enumerate(configs.items())
@@ -127,26 +152,12 @@ def test_probe_captures_once_and_discards_actions(tmp_path):
     assert all((result.evidence_dir / f"{name}.png").is_file() for name in cameras)
 
 
-def test_probe_camera_defaults_match_afterquery_robot_preset():
-    from lerobot.robots.bi_yam.config_bi_yam import AfterQueryDualYAMConfig
+def test_probe_requires_runtime_camera_configuration(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.cameras = {}
 
-    probe_cameras = probe_module._default_cameras()
-    robot_cameras = AfterQueryDualYAMConfig().cameras
-    assert tuple(probe_cameras) == tuple(robot_cameras)
-    for name in probe_cameras:
-        probe_camera = probe_cameras[name]
-        robot_camera = robot_cameras[name]
-        assert (
-            probe_camera.serial_number_or_name,
-            probe_camera.width,
-            probe_camera.height,
-            probe_camera.fps,
-        ) == (
-            robot_camera.serial_number_or_name,
-            robot_camera.width,
-            robot_camera.height,
-            robot_camera.fps,
-        )
+    with pytest.raises(ValueError, match="top, left, right"):
+        probe_module.run_policy_probe(cfg, camera_factory=lambda _configs: {}, client_factory=FakeClient)
 
 
 def test_probe_refuses_missing_or_unlabelled_state_before_camera_creation(tmp_path):
@@ -166,6 +177,12 @@ def test_probe_refuses_missing_or_unlabelled_state_before_camera_creation(tmp_pa
     cfg = _config(tmp_path)
     cfg.state_source = ""
     with pytest.raises(ValueError, match="state_source"):
+        probe_module.run_policy_probe(cfg, camera_factory=camera_factory, client_factory=FakeClient)
+    assert created is False
+
+    cfg = _config(tmp_path)
+    cfg.robot_id = ""
+    with pytest.raises(ValueError, match="robot_id"):
         probe_module.run_policy_probe(cfg, camera_factory=camera_factory, client_factory=FakeClient)
     assert created is False
 

@@ -172,6 +172,10 @@ def _find_motor_control_threads(
 
 def make_i2rt_backend(config: YAMArmConfig) -> ArmBackend:
     config.validate_hardware_startup()
+    if not config.sim and config.channel is None:
+        raise RuntimeError(
+            "Physical YAM adapter_serial must be resolved to a SocketCAN channel by BiYAMFollower"
+        )
     try:
         from i2rt.robots.get_robot import get_yam_robot
         from i2rt.robots.utils import ArmType, GripperType

@@ -95,9 +95,11 @@ median state can stand in for live state. Keep the source label accurate:
 ```bash
 uv run lerobot-policy-probe \
     --server_address=<server-ip>:8081 \
+    --robot_id=<robot-id> \
     --task="pick up the object" \
     --state_source=checkpoint-q50-not-live-hardware \
-    --state='[-0.07460957,1.45187420,1.27903396,-0.80040099,0.11633919,-0.22562396,0.74105157,0.08125296,1.54637449,1.24736453,-0.68268310,-0.13268824,0.19324336,0.69752937]'
+    --state='[-0.07460957,1.45187420,1.27903396,-0.80040099,0.11633919,-0.22562396,0.74105157,0.08125296,1.54637449,1.24736453,-0.68268310,-0.13268824,0.19324336,0.69752937]' \
+    --cameras='{top: {type: intelrealsense, serial_number_or_name: "<top-camera-serial>", width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: "<left-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: "<right-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}'
 ```
 
 Each run creates a timestamped directory under `outputs/policy_probe` containing
@@ -108,81 +110,88 @@ policy execution, but not live joint-state acquisition or physical control.
 
 ## Run a physical dual YAM
 
-Configure the two CAN interfaces and verify each arm independently before
-autonomous rollout. The physical adapter starts one isolated i2rt worker per
-arm and keeps both workers idle until server negotiation succeeds.
+The generic `bi_yam_follower` takes the robot ID, CANable USB serials, and camera
+serials at runtime. It does not require persistent udev interface names. The
+physical adapter starts one isolated i2rt worker per arm and keeps both workers
+idle until server negotiation succeeds.
 
-The registered `afterquery_dual_yam` robot type provides typed defaults for the
-lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
-verified RealSense serials at 30 FPS (`top` at 640x480; `left` and `right` at
-640x360), per-tick deltas of 0.10 radians for joints and 0.03 normalized units
-for grippers, the stable physical-device ID `afterquery_dual_yam`, and a one-second
-command watchdog. Per-device gripper endpoints are loaded from that ID's local
-LeRobot calibration file rather than stored in source. These per-tick deltas were
-validated during a 60-second physical MolmoAct2 rollout at 30 FPS. Operational
-joint and gripper bounds remain enforced. The watchdog
-allows for normal three-camera scheduling jitter but still puts both workers in
-safe idle if the client command stream stops. Server address, task, and duration
-remain runtime arguments.
+### Discover and configure CAN
 
-The public MolmoAct2 YAM configs define the checkpoint start pose as [six arm
-joints at exactly `0.0` radians followed by a `1.0` gripper for the left
-arm](https://github.com/allenai/molmoact2/blob/main/examples/yam/configs/yam_left.yaml#L22-L25)
-and [six arm joints at exactly `0.0` radians followed by a `0.0` gripper for the
-right arm](https://github.com/allenai/molmoact2/blob/main/examples/yam/configs/yam_right.yaml#L10-L11).
-The AQ adapter preserves that exact left-then-right ordering and sends each
-seven-value arm target directly to i2rt without changing the six joint values.
-For the AfterQuery hardware preset, both reset grippers are intentionally set to
-`1.0` (open), based on supervised physical testing. Its complete reset vector is
-therefore `[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]`. This differs from the
-public MolmoAct2 example only in the right gripper; all twelve arm-joint targets
-remain exactly `0.0` radians.
+The configured serials identify the USB-to-CAN adapters, not the YAM arms. On a
+new installation, stop robot-control processes, connect one adapter at a time,
+run the read-only listing, and trace its CAN cable to the corresponding arm.
+Label the adapters or cables after the mapping is known.
 
-The [public launcher](https://github.com/allenai/molmoact2/blob/main/examples/yam/launch_yaml_eval_molmoact.py)
-moves to that pose after constructing the hardware, before every rollout, and
-again at process exit. The AQ client has the same normal lifecycle: it resets
-before policy control, the episodic strategy repeats the reset before every
-policy episode, and LeRobot's default `--return_to_initial_position=true` parks
-at the AfterQuery both-open pose during teardown. Because policy execution is
-remote here, the AQ client completes server negotiation before arming and
-starting the first reset.
+```bash
+uv run lerobot-setup-can --mode=list
+```
 
-The reset follows MolmoAct2's absolute interpolation parameters: waypoints no
-more than `0.01` apart, at 30 Hz, capped at 100 interpolation steps. The AQ client
-also holds the final target and verifies every joint is within `0.035`; these are
-safety checks absent from the public helper. It aborts and idles both arms if the
-pose is not reached within 30 seconds. An inference failure also idles immediately
-instead of attempting another movement during error teardown.
+The listing reports each stable USB serial and its current, potentially reordered
+`canN` interface. Configure the YAM adapters as classic CAN at 1 Mbit/s after a
+reboot or replug:
 
-An i2rt `linear_4310` gripper without raw `[closed, open]` endpoints normally
-performs a moving calibration while the robot is constructed. The AfterQuery
-adapter disables that implicit behavior: normal rollout requires both endpoints
-to have been loaded before either hardware worker is created. Calibrate each
-gripper separately under supervision. Each command below intentionally moves only
-the selected gripper:
+```bash
+uv run lerobot-setup-can \
+    --left_adapter_serial=<left-canable-serial> \
+    --right_adapter_serial=<right-canable-serial>
+```
+
+This command performs only privileged `ip link` operations and verifies the
+result. It does not import i2rt, open a CAN bus, send motor frames, or move the
+robot. The rollout resolves the serials again and refuses to construct either
+i2rt worker if an adapter is missing, duplicated, down, in CAN FD mode, or set
+to the wrong bitrate.
+
+The generic defaults include per-tick deltas of 0.10 radians for joints and 0.03
+normalized units for grippers, a one-second command watchdog, and the tested
+operational bounds. Per-device gripper endpoints are loaded from the runtime
+robot ID's local calibration file rather than stored in source.
+
+### Reset behavior
+
+The public MolmoAct2 configs use six `0.0` arm-joint targets per arm. LeRobot
+preserves their left-then-right ordering and uses a tested both-open reset vector:
+`[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]`. Waypoints are no more than `0.01`
+apart at 30 Hz and are capped at 100 interpolation steps. The client holds the
+final target, verifies every value within `0.035`, and idles both arms if the pose
+is not reached within 30 seconds.
+
+The client resets before policy control and between policy episodes. LeRobot's
+default `--return_to_initial_position=true` returns to the same pose during normal
+teardown. Remote server negotiation completes before the client arms and begins
+the first reset.
+
+### Calibrate the grippers
+
+Normal rollout requires both raw `[closed, open]` gripper endpoint pairs before
+either worker is created. Calibration starts only the selected arm, opens no
+cameras, and disables policy control. Each command below intentionally moves one
+gripper and must be supervised:
 
 ```bash
 uv run lerobot-calibrate \
-    --robot.type=afterquery_dual_yam \
-    --robot.id=afterquery_dual_yam \
+    --robot.type=bi_yam_follower \
+    --robot.id=<robot-id> \
+    --robot.left_arm_config.adapter_serial=<left-canable-serial> \
     --robot.calibration_side=left \
     --robot.left_arm_config.allow_gripper_calibration=true
 
 uv run lerobot-calibrate \
-    --robot.type=afterquery_dual_yam \
-    --robot.id=afterquery_dual_yam \
+    --robot.type=bi_yam_follower \
+    --robot.id=<robot-id> \
+    --robot.right_arm_config.adapter_serial=<right-canable-serial> \
     --robot.calibration_side=right \
     --robot.right_arm_config.allow_gripper_calibration=true
 ```
 
-The two commands merge their results into the standard LeRobot calibration file
-`~/.cache/huggingface/lerobot/calibration/robots/afterquery_dual_yam/afterquery_dual_yam.json`.
-Keep using the same `--robot.id` for calibration and rollout. Calibration mode
-starts only the selected arm, does not open cameras, and disables policy control.
-Do not set `allow_gripper_calibration` during an autonomous rollout. The default
-file is already outside the Git checkout. To keep it inside a particular checkout
-instead, add `--robot.calibration_dir=calibration` to both calibration commands and
-every rollout command; that root directory is gitignored.
+The commands merge into
+`~/.cache/huggingface/lerobot/calibration/robots/bi_yam_follower/<robot-id>.json`.
+Use the same ID for calibration and rollout. Do not enable moving calibration in
+an autonomous rollout. To keep calibration under a checkout instead, add
+`--robot.calibration_dir=calibration` to calibration and rollout commands; that
+directory is gitignored.
+
+### Run the rollout
 
 ```bash
 uv run lerobot-rollout \
@@ -190,25 +199,25 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --robot.type=afterquery_dual_yam \
-    --robot.id=afterquery_dual_yam \
+    --robot.type=bi_yam_follower \
+    --robot.id=<robot-id> \
+    --robot.left_arm_config.adapter_serial=<left-canable-serial> \
+    --robot.right_arm_config.adapter_serial=<right-canable-serial> \
+    --robot.cameras='{top: {type: intelrealsense, serial_number_or_name: "<top-camera-serial>", width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: "<left-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: "<right-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}' \
     --robot.control_telemetry_path=outputs/yam-control.jsonl \
-    --task="pick up the object" \
+    --task="Pick up the oranges and put them in the bowl" \
     --fps=30 \
     --duration=60
 ```
 
-After server negotiation succeeds, this command arms the robot and immediately
-starts the canonical reset trajectory before sending any observation to the
-policy. Clear the workspace and keep the hardware stop ready before launching it.
-The optional telemetry file records every requested, bounded, applied, and
-measured 14-D target, requested and applied tracking errors, and the joint names
-clipped by operational bounds or per-tick deltas. Empty action-queue iterations
-do not advance the execution tick, so inference latency does not discard the
-beginning of the first action chunk before the robot has moved.
+After negotiation, the command resets the robot before sending the first policy
+observation. The optional telemetry records requested, bounded, applied, and
+measured targets, tracking errors, and clipped joints. Empty action-queue
+iterations do not advance the execution tick.
 
-To test the same reset, live state, cameras, and remote policy without executing
-policy actions, use the rollout action-probe strategy:
+To run the reset and remote policy while logging but never executing returned
+policy actions, use the action-probe strategy with the same robot and camera
+arguments:
 
 ```bash
 uv run lerobot-rollout \
@@ -217,28 +226,25 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --robot.type=afterquery_dual_yam \
-    --robot.id=afterquery_dual_yam \
+    --robot.type=bi_yam_follower \
+    --robot.id=<robot-id> \
+    --robot.left_arm_config.adapter_serial=<left-canable-serial> \
+    --robot.right_arm_config.adapter_serial=<right-canable-serial> \
+    --robot.cameras='{top: {type: intelrealsense, serial_number_or_name: "<top-camera-serial>", width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: "<left-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: "<right-camera-serial>", width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}' \
     --robot.control_telemetry_path=outputs/yam-reset-control.jsonl \
-    --task="pick up the object" \
+    --task="Pick up the oranges and put them in the bowl" \
     --fps=30 \
     --duration=10
 ```
 
 The configured reset is the only commanded motion. Once it succeeds, the
-strategy disarms both workers before observations are submitted. Every returned
-action is written with `executed: false`; the action processor still runs, but
-`robot.send_action` is never called. Teardown does not command another return
-trajectory.
-
-The generic `bi_yam_follower` type remains available for other installations;
-its channels, cameras, and any explicit gripper overrides can be supplied with
-normal dataclass-backed CLI arguments.
+strategy disarms both workers before submitting observations. Returned actions
+are written with `executed: false`; `robot.send_action` is never called.
 
 Camera dictionary order is part of the model contract. A missing, extra, or
 reordered camera, state field, or action field makes session setup fail before
-the robot arms. Commands are bounded by joint, gripper, and per-step delta
-limits on the robot computer.
+the robot arms. Commands are bounded by joint, gripper, and per-step delta limits
+on the robot computer.
 
 ## Failure behavior
 
