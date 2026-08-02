@@ -106,15 +106,30 @@ send motor frames, or move the robot.
 
 ### Find camera serials
 
-List and preview the connected RealSense cameras:
+Discover the connected RealSense cameras and capture a preview from each one:
 
 ```bash
 uv run lerobot-find-cameras realsense
 ```
 
-If their physical roles are not already labeled, connect one camera at a time
-to identify `top`, `left`, and `right`. Camera order is part of the MolmoAct2
-contract and must remain `top`, `left`, `right`.
+The command saves the previews under `outputs/captured_images` in the current
+repository. Each filename contains its camera serial:
+
+```text
+outputs/captured_images/realsense_<serial-number>.png
+```
+
+Inspect the images to identify the `top`, `left`, and `right` views, then set:
+
+```bash
+TOP_CAMERA=<top-camera-serial>
+LEFT_CAMERA=<left-camera-serial>
+RIGHT_CAMERA=<right-camera-serial>
+```
+
+If a view is still ambiguous, connect one camera at a time and rerun the
+command. Camera order is part of the MolmoAct2 contract and must remain `top`,
+`left`, `right`.
 
 ## Calibrate once
 
