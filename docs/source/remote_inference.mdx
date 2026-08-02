@@ -118,15 +118,28 @@ allows for normal three-camera scheduling jitter but still puts both workers in
 safe idle if the client command stream stops. Server address, task, and duration
 remain runtime arguments.
 
-Like the original MolmoAct2 YAM launcher, this preset automatically moves to the
-checkpoint's canonical start position before policy control: left arm joints at
-zero with its gripper at `1.0`, then right arm joints at zero with its gripper at
-`0.0`. The reset interpolates absolute waypoints approximately `0.01` apart at
-30 Hz, holds the final target, and verifies every joint is within `0.035` of the
-target. It aborts and idles both arms if the pose is not reached within 30 seconds.
-The episodic strategy repeats this reset before every policy episode. With
-LeRobot's default `--return_to_initial_position=true`, teardown parks at the same
-canonical pose.
+The public MolmoAct2 YAM configs define the checkpoint start pose as [six arm
+joints at exactly `0.0` radians followed by a `1.0` gripper for the left
+arm](https://github.com/allenai/molmoact2/blob/main/examples/yam/configs/yam_left.yaml#L22-L25)
+and [six arm joints at exactly `0.0` radians followed by a `0.0` gripper for the
+right arm](https://github.com/allenai/molmoact2/blob/main/examples/yam/configs/yam_right.yaml#L10-L11).
+The AQ adapter preserves that exact left-then-right ordering and sends each
+seven-value arm target directly to i2rt without changing the six joint values.
+
+The [public launcher](https://github.com/allenai/molmoact2/blob/main/examples/yam/launch_yaml_eval_molmoact.py)
+moves to that pose after constructing the hardware, before every rollout, and
+again at process exit. The AQ client has the same normal lifecycle: it resets
+before policy control, the episodic strategy repeats the reset before every
+policy episode, and LeRobot's default `--return_to_initial_position=true` parks
+at that pose during teardown. Because policy execution is remote here, the AQ
+client completes server negotiation before arming and starting the first reset.
+
+The reset follows MolmoAct2's absolute interpolation parameters: waypoints no
+more than `0.01` apart, at 30 Hz, capped at 100 interpolation steps. The AQ client
+also holds the final target and verifies every joint is within `0.035`; these are
+safety checks absent from the public helper. It aborts and idles both arms if the
+pose is not reached within 30 seconds. An inference failure also idles immediately
+instead of attempting another movement during error teardown.
 
 An i2rt `linear_4310` gripper without raw `[closed, open]` endpoints normally
 performs a moving calibration while the robot is constructed. The AfterQuery

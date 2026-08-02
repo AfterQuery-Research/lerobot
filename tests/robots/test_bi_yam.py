@@ -29,6 +29,8 @@ import pytest
 
 from lerobot.robots.bi_yam import (
     MOLMOACT2_BIMANUAL_YAM_START_POSITION,
+    MOLMOACT2_YAM_LEFT_START_POSITION,
+    MOLMOACT2_YAM_RIGHT_START_POSITION,
     YAM_SCALAR_KEYS,
     AfterQueryDualYAM,
     AfterQueryDualYAMConfig,
@@ -308,6 +310,14 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.calibration_side is None
     assert config.max_joint_delta == 0.03
     assert config.max_gripper_delta == 0.03
+    assert MOLMOACT2_YAM_LEFT_START_POSITION[:6] == (0.0,) * 6
+    assert MOLMOACT2_YAM_RIGHT_START_POSITION[:6] == (0.0,) * 6
+    assert MOLMOACT2_YAM_LEFT_START_POSITION[6] == 1.0
+    assert MOLMOACT2_YAM_RIGHT_START_POSITION[6] == 0.0
+    assert (
+        *MOLMOACT2_YAM_LEFT_START_POSITION,
+        *MOLMOACT2_YAM_RIGHT_START_POSITION,
+    ) == MOLMOACT2_BIMANUAL_YAM_START_POSITION
     assert config.policy_start_position == MOLMOACT2_BIMANUAL_YAM_START_POSITION
     assert config.policy_reset_step_size == 0.01
     assert config.policy_reset_max_steps == 100
