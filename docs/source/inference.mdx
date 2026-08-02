@@ -251,13 +251,14 @@ lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
     --inference.server_address=policy-host:8081 \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=bi_yam_simulator \
     --task="Pick up the cube" \
     --duration=60
 ```
 
-See [Remote Policy Inference](./remote_inference) for server setup, authentication,
-TLS or SSH tunneling, dual-YAM hardware configuration, and simulator testing.
+See [Remote Policy Inference](./remote_inference) for server setup, dual-YAM
+hardware configuration, and simulator testing.
 
 ---
 

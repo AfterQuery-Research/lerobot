@@ -2991,7 +2991,8 @@ all = [
     { name = "pygame" },
     { name = "pymunk" },
     { name = "pynput" },
-    { name = "pyrealsense2", marker = "sys_platform != 'darwin'" },
+    { name = "pyrealsense2", version = "2.56.5.9235", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'arm64' and sys_platform != 'darwin'" },
+    { name = "pyrealsense2", version = "2.58.3.10794", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'linux')" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
     { name = "pyserial" },
     { name = "pytest" },
@@ -3175,7 +3176,8 @@ hopejr = [
     { name = "pyserial" },
 ]
 intelrealsense = [
-    { name = "pyrealsense2", marker = "sys_platform != 'darwin'" },
+    { name = "pyrealsense2", version = "2.56.5.9235", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'arm64' and sys_platform != 'darwin'" },
+    { name = "pyrealsense2", version = "2.58.3.10794", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'linux')" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
 ]
 kinematics = [
@@ -3582,7 +3584,8 @@ requires-dist = [
     { name = "pygame", marker = "extra == 'pygame-dep'", specifier = ">=2.5.1,<2.7.0" },
     { name = "pymunk", marker = "extra == 'pusht'", specifier = ">=6.6.0,<7.0.0" },
     { name = "pynput", marker = "extra == 'pynput-dep'", specifier = ">=1.7.8,<1.9.0" },
-    { name = "pyrealsense2", marker = "sys_platform != 'darwin' and extra == 'intelrealsense'", specifier = ">=2.55.1.6486,<2.57.0" },
+    { name = "pyrealsense2", marker = "platform_machine != 'aarch64' and platform_machine != 'arm64' and sys_platform != 'darwin' and extra == 'intelrealsense'", specifier = ">=2.55.1.6486,<2.57.0" },
+    { name = "pyrealsense2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'intelrealsense') or (platform_machine == 'arm64' and sys_platform == 'linux' and extra == 'intelrealsense')", specifier = ">=2.58.3.10794,<2.59.0" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin' and extra == 'intelrealsense'", specifier = ">=2.54,<2.57.0" },
     { name = "pyserial", marker = "extra == 'pyserial-dep'", specifier = ">=3.5,<4.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.1.0,<10.0.0" },
@@ -5674,11 +5677,47 @@ wheels = [
 name = "pyrealsense2"
 version = "2.56.5.9235"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.15' and platform_machine == 'AMD64' and sys_platform == 'linux') or (python_full_version >= '3.15' and platform_machine == 'x86_64' and sys_platform == 'linux')",
+    "(python_full_version == '3.14.*' and platform_machine == 'AMD64' and sys_platform == 'linux') or (python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux')",
+    "(python_full_version == '3.13.*' and platform_machine == 'AMD64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'linux')",
+    "(python_full_version < '3.13' and platform_machine == 'AMD64' and sys_platform == 'linux') or (python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux')",
+    "python_full_version >= '3.15' and platform_machine != 'AMD64' and platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'linux'",
+    "python_full_version == '3.14.*' and platform_machine != 'AMD64' and platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'linux'",
+    "python_full_version == '3.13.*' and platform_machine != 'AMD64' and platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'linux'",
+    "python_full_version < '3.13' and platform_machine != 'AMD64' and platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'linux'",
+    "(python_full_version >= '3.15' and platform_machine != 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.15' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
+    "(python_full_version == '3.14.*' and platform_machine != 'arm64' and sys_platform == 'darwin') or (python_full_version == '3.14.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "(python_full_version == '3.13.*' and platform_machine != 'arm64' and sys_platform == 'darwin') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
+    "(python_full_version < '3.13' and platform_machine != 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.13' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version < '3.13' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'win32'",
+]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fc/20/a46e60a496a17f1cf0cbdffb45e66dc015756e4dbce83580fd569e53e178/pyrealsense2-2.56.5.9235-cp312-cp312-manylinux1_x86_64.whl", hash = "sha256:ba2c22981111adbefb169c39e023af4352a2409dfbff59f02c2404c68b82064b", size = 11062766, upload-time = "2025-07-28T14:59:26.551Z" },
     { url = "https://files.pythonhosted.org/packages/22/b5/dd8349abac780aed774f65825fc2ed3ca832b0ad2bf3293262bfa9a517b2/pyrealsense2-2.56.5.9235-cp312-cp312-win_amd64.whl", hash = "sha256:e9c64b94cf6170a3ad60416ff1bf969df8aafe383d4bff14e0fa10b2459d885b", size = 7801788, upload-time = "2025-07-28T14:59:28.303Z" },
     { url = "https://files.pythonhosted.org/packages/a8/66/fa706f1d906a06d5e7015d5b412a48de9914549792eb5cb53c1854e06427/pyrealsense2-2.56.5.9235-cp313-cp313-manylinux1_x86_64.whl", hash = "sha256:c203bc8c79d5958889681408f1038ee69b0021fd8cba7ff2d4532fc90295c4fc", size = 11062717, upload-time = "2025-07-28T14:59:30.072Z" },
     { url = "https://files.pythonhosted.org/packages/b2/88/19425ce6fa809d31a8d23f46dfa6aed9b16a881e8a00e0162d4b97ba1e64/pyrealsense2-2.56.5.9235-cp313-cp313-win_amd64.whl", hash = "sha256:ad8012f7fec843c3c6ec8904bfff048806dc7b4c7709e021c6ea75e83d8d5096", size = 7802471, upload-time = "2025-07-28T14:59:31.985Z" },
+]
+
+[[package]]
+name = "pyrealsense2"
+version = "2.58.3.10794"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.15' and platform_machine == 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'linux')",
+    "(python_full_version == '3.14.*' and platform_machine == 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.14.*' and platform_machine == 'arm64' and sys_platform == 'linux')",
+    "(python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and platform_machine == 'arm64' and sys_platform == 'linux')",
+    "(python_full_version < '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.13' and platform_machine == 'arm64' and sys_platform == 'linux')",
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/f6/2a82258bf7d398473bc1a2fc53f28788e4c65a929b51c44a07abee7421ad/pyrealsense2-2.58.3.10794-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:c9d6979157e1cc566cbabb93be5b1ae75a78b3b8c40d37262031182527e4f9a0", size = 6484257, upload-time = "2026-07-19T15:55:02.246Z" },
 ]
 
 [[package]]
