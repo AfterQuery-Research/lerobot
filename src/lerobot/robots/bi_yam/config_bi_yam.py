@@ -152,6 +152,7 @@ class BiYAMFollowerConfig(RobotConfig):
     left_joint_limits: list[tuple[float, float]] = field(default_factory=_default_joint_limits)
     right_joint_limits: list[tuple[float, float]] = field(default_factory=_default_joint_limits)
     gripper_limits: tuple[float, float] = (0.0, 1.0)
+    gripper_state_tolerance: float = 0.15
     max_joint_delta: float = 0.1
     max_gripper_delta: float = 0.1
 
@@ -184,6 +185,8 @@ class BiYAMFollowerConfig(RobotConfig):
                 raise ValueError(f"{name} must be positive")
         if not math.isfinite(self.command_lead_time_s) or self.command_lead_time_s < 0:
             raise ValueError("command_lead_time_s must be non-negative")
+        if not math.isfinite(self.gripper_state_tolerance) or self.gripper_state_tolerance < 0:
+            raise ValueError("gripper_state_tolerance must be non-negative")
         if self.policy_reset_max_steps <= 0:
             raise ValueError("policy_reset_max_steps must be positive")
 
@@ -243,7 +246,7 @@ def _afterquery_cameras() -> dict[str, CameraConfig]:
 class AfterQueryLeftYAMArmConfig(YAMArmConfig):
     channel: str = "can_yam_new"
     gripper_limits_override: tuple[float, float] | None = (
-        6.370450904097048,
+        0.08726559691746161,
         1.223964293888761,
     )
     command_ttl_s: float = 1.0
@@ -253,7 +256,7 @@ class AfterQueryLeftYAMArmConfig(YAMArmConfig):
 class AfterQueryRightYAMArmConfig(YAMArmConfig):
     channel: str = "can_yam_old"
     gripper_limits_override: tuple[float, float] | None = (
-        6.396772716868849,
+        0.11358740968926284,
         1.2010757610437164,
     )
     command_ttl_s: float = 1.0

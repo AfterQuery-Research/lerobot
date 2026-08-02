@@ -296,11 +296,11 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.left_arm_config.command_ttl_s == 1.0
     assert config.right_arm_config.command_ttl_s == 1.0
     assert config.left_arm_config.gripper_limits_override == (
-        6.370450904097048,
+        0.08726559691746161,
         1.223964293888761,
     )
     assert config.right_arm_config.gripper_limits_override == (
-        6.396772716868849,
+        0.11358740968926284,
         1.2010757610437164,
     )
     assert not config.left_arm_config.allow_gripper_calibration
@@ -314,6 +314,7 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.policy_reset_fps == 30
     assert config.policy_reset_tolerance == 0.01
     assert config.policy_reset_timeout_s == 30
+    assert config.gripper_state_tolerance == 0.15
     assert list(config.cameras) == ["top", "left", "right"]
     assert {name: camera.serial_number_or_name for name, camera in config.cameras.items()} == {
         "top": "262422074066",
@@ -545,12 +546,29 @@ def test_connect_stays_disarmed_and_observation_uses_ordered_state_and_camera(tm
 
     assert not robot.is_armed
     assert list(observation) == [*YAM_SCALAR_KEYS, "top"]
-    assert [observation[key] for key in YAM_SCALAR_KEYS] == pytest.approx(np.arange(14) / 10)
+    expected = np.arange(14, dtype=np.float64) / 10
+    expected[13] = 1.0
+    assert [observation[key] for key in YAM_SCALAR_KEYS] == pytest.approx(expected)
     assert observation["top"].shape == (3, 4, 3)
     assert set(robot.state_metadata) == {"left", "right"}
 
     with pytest.raises(RuntimeError, match="arm it locally"):
         robot.send_action(zero_action())
+    robot.disconnect()
+
+
+def test_gripper_stop_overtravel_is_accepted_and_clipped_in_observations(tmp_path):
+    robot, workers = make_robot(tmp_path)
+    robot.connect()
+    workers["left"].positions[6] = 1.1
+    workers["right"].positions[6] = -0.1
+
+    observation = robot.get_observation()
+    robot.arm()
+
+    assert observation["left_gripper.pos"] == 1.0
+    assert observation["right_gripper.pos"] == 0.0
+    assert robot.is_armed
     robot.disconnect()
 
 

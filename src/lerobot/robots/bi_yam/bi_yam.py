@@ -184,7 +184,7 @@ class BiYAMFollower(Robot):
         self._require_connected()
         states = self._refresh_states()
         observation: RobotObservation = {}
-        positions = (*states["left"].positions, *states["right"].positions)
+        positions = self._control_positions(states)
         for key, value in zip(YAM_SCALAR_KEYS, positions, strict=True):
             observation[key] = value
 
@@ -212,7 +212,7 @@ class BiYAMFollower(Robot):
         except Exception:
             self._safe_idle_workers()
             raise
-        present = np.asarray((*states["left"].positions, *states["right"].positions), dtype=np.float64)
+        present = self._control_positions(states)
         applied = self._apply_safety_limits(requested, present)
         return self._dispatch_positions(applied)
 
@@ -234,12 +234,36 @@ class BiYAMFollower(Robot):
         logger.info("Moving BiYAM to its configured policy start position")
 
         try:
+            states = self._refresh_commandable_states()
+            start = self._control_positions(states)
+            max_error = float(np.max(np.abs(target - start)))
+            if max_error <= self.config.policy_reset_tolerance:
+                logger.info("BiYAM is already at its policy start position (max error %.4f)", max_error)
+                return target_action
+
+            trajectory_steps = min(
+                max(int(np.ceil(max_error / self.config.policy_reset_step_size)), 1),
+                self.config.policy_reset_max_steps,
+            )
+            logger.info("Executing policy reset trajectory (%d steps)", trajectory_steps)
+            for waypoint in np.linspace(start, target, trajectory_steps + 1)[1:]:
+                loop_started_at = time.perf_counter()
+                states = self._refresh_commandable_states()
+                present = self._control_positions(states)
+                max_error = float(np.max(np.abs(target - present)))
+                if time.monotonic() - started_at >= self.config.policy_reset_timeout_s:
+                    raise TimeoutError(
+                        "BiYAM did not reach its policy start position within "
+                        f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
+                    )
+                self._dispatch_positions(waypoint)
+                time.sleep(max(0.0, control_interval_s - (time.perf_counter() - loop_started_at)))
+
+            # Keep the final absolute target active until measured state settles.
             while True:
                 loop_started_at = time.perf_counter()
                 states = self._refresh_commandable_states()
-                present = np.asarray(
-                    (*states["left"].positions, *states["right"].positions), dtype=np.float64
-                )
+                present = self._control_positions(states)
                 max_error = float(np.max(np.abs(target - present)))
                 if max_error <= self.config.policy_reset_tolerance:
                     logger.info("BiYAM reached its policy start position (max error %.4f)", max_error)
@@ -249,20 +273,7 @@ class BiYAMFollower(Robot):
                         "BiYAM did not reach its policy start position within "
                         f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
                     )
-
-                # MolmoAct2 uses ~0.01 increments, widening them only when needed
-                # to keep a reset trajectory at no more than 100 steps.
-                step_size = max(
-                    self.config.policy_reset_step_size,
-                    max_error / self.config.policy_reset_max_steps,
-                )
-                applied = self._apply_safety_limits(
-                    target,
-                    present,
-                    max_joint_delta=step_size,
-                    max_gripper_delta=step_size,
-                )
-                self._dispatch_positions(applied)
+                self._dispatch_positions(target)
                 time.sleep(max(0.0, control_interval_s - (time.perf_counter() - loop_started_at)))
         except (Exception, KeyboardInterrupt):
             self._safe_idle_workers()
@@ -405,8 +416,16 @@ class BiYAMFollower(Robot):
     def _validate_operational_state(self, states: dict[str, ArmState]) -> None:
         positions = np.asarray((*states["left"].positions, *states["right"].positions), dtype=np.float64)
         lower, upper = self._operational_bounds()
+        lower[[6, 13]] -= self.config.gripper_state_tolerance
+        upper[[6, 13]] += self.config.gripper_state_tolerance
         if not np.isfinite(positions).all() or np.any(positions < lower) or np.any(positions > upper):
             raise RuntimeError("Cannot arm while measured state is outside operational limits")
+
+    def _control_positions(self, states: dict[str, ArmState]) -> np.ndarray:
+        positions = np.asarray((*states["left"].positions, *states["right"].positions), dtype=np.float64)
+        gripper_lower, gripper_upper = self.config.gripper_limits
+        positions[[6, 13]] = np.clip(positions[[6, 13]], gripper_lower, gripper_upper)
+        return positions
 
     def _refresh_commandable_states(self) -> dict[str, ArmState]:
         states = self._refresh_states()
@@ -435,24 +454,15 @@ class BiYAMFollower(Robot):
             raise ValueError("Action values must all be finite")
         return values
 
-    def _apply_safety_limits(
-        self,
-        requested: np.ndarray,
-        present: np.ndarray,
-        *,
-        max_joint_delta: float | None = None,
-        max_gripper_delta: float | None = None,
-    ) -> np.ndarray:
+    def _apply_safety_limits(self, requested: np.ndarray, present: np.ndarray) -> np.ndarray:
         lower, upper = self._operational_bounds()
         bounded = np.clip(requested, lower, upper)
-        joint_delta = self.config.max_joint_delta if max_joint_delta is None else max_joint_delta
-        gripper_delta = self.config.max_gripper_delta if max_gripper_delta is None else max_gripper_delta
         delta = np.asarray(
             [
-                *([joint_delta] * 6),
-                gripper_delta,
-                *([joint_delta] * 6),
-                gripper_delta,
+                *([self.config.max_joint_delta] * 6),
+                self.config.max_gripper_delta,
+                *([self.config.max_joint_delta] * 6),
+                self.config.max_gripper_delta,
             ],
             dtype=np.float64,
         )
