@@ -401,7 +401,8 @@ def test_process_worker_ipc_applies_command_and_reports_ttl_fault():
         backend_factory=make_fake_backend,
     )
     try:
-        assert worker.start(timeout_s=2.0).ready
+        # Spawn imports are noticeably slower on the Raspberry Pi client.
+        assert worker.start(timeout_s=10.0).ready
         assert worker.arm(timeout_s=1.0).armed
         command = ArmCommand(sequence=7, execute_at_ns=time.monotonic_ns(), positions=(0.25,) * 7)
         worker.send_command(command)
