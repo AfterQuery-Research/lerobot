@@ -125,10 +125,14 @@ or replug:
 uv run lerobot-setup-can \
     --left_adapter_serial="$LEFT_CAN" \
     --right_adapter_serial="$RIGHT_CAN"
+
+ip -details link show type can
 ```
 
 This performs only `ip link` setup and verification. It does not import i2rt,
-send motor frames, or move the robot.
+send motor frames, or move the robot. Confirm that both interfaces report `UP`
+before continuing. You do not need to repeat setup before each rollout unless
+the computer rebooted or an adapter was replugged.
 
 ## Calibrate once
 
