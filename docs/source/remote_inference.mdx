@@ -20,7 +20,9 @@ uv sync --extra core_scripts --extra remote --extra bi_yam --extra intelrealsens
 ```
 
 On Linux ARM64, the `intelrealsense` extra selects the RealSense release that
-provides an ARM64 wheel; earlier releases only publish Linux x86-64 wheels.
+provides an ARM64 wheel; earlier releases only publish Linux x86-64 wheels. The
+lockfile also selects CPU-only PyTorch wheels on ARM64 instead of the policy
+server's CUDA build.
 The `bi_yam` extra pins the tested i2rt commit containing the multi-turn gripper
 encoder-wrap fix from
 [i2rt PR #82](https://github.com/i2rt-robotics/i2rt/pull/82). Its native
