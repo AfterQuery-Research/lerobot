@@ -29,9 +29,6 @@ The released dual-YAM checkpoint contract uses normalization tag
 state/action values in left-arm-then-right-arm order.
 
 ```bash
-# Note an IP address reachable from the robot computer.
-hostname -I
-
 uv run lerobot-policy-server \
     --policy.pretrained_name_or_path=allenai/MolmoAct2-BimanualYAM \
     --policy.policy_type=molmoact2 \
@@ -133,41 +130,6 @@ Camera dictionary order is part of the model contract. A missing, extra, or
 reordered camera, state field, or action field makes session setup fail before
 the robot arms. Commands are bounded by joint, gripper, and per-step delta
 limits on the robot computer.
-
-## Secure the connection
-
-The direct IP connection does not require a separate credential. With the server
-listening on `0.0.0.0` and TCP port 8081 reachable, setting
-`--inference.server_address=<server-ip>:8081` is sufficient.
-
-Direct connections are unencrypted. Keep port 8081 restricted to the lab network
-or the robot computer with a cloud firewall. For an untrusted network, use TLS,
-mutual TLS, a private VPN, or an SSH tunnel.
-
-An SSH tunnel keeps the server bound to localhost:
-
-```bash
-# Policy server
-uv run lerobot-policy-server \
-    --policy.pretrained_name_or_path=allenai/MolmoAct2-BimanualYAM \
-    --policy.policy_type=molmoact2 \
-    --policy.norm_tag=yam_dual_molmoact2 \
-    --policy.inference_action_mode=continuous \
-    --host=127.0.0.1 \
-    --port=8081
-
-# Robot computer
-ssh -N -L 8081:127.0.0.1:8081 user@policy-host
-uv run lerobot-rollout <robot flags> \
-    --inference.type=remote \
-    --inference.server_address=127.0.0.1:8081
-```
-
-For TLS, configure `--tls_cert_path` and `--tls_key_path` on the server and
-`--inference.tls_root_cert_path` on the client. Add
-`--tls_client_ca_path` on the server plus the matching
-`--inference.tls_client_cert_path` and `--inference.tls_client_key_path` on the
-client for mutual TLS.
 
 ## Failure behavior
 
