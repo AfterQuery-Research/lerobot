@@ -259,6 +259,8 @@ class RolloutConfig:
     interpolation_multiplier: int = 1
     device: str | None = None
     task: str = ""
+    # Optional Python application log. The rollout entry point creates its parent directory.
+    log_file: Path | None = None
     display_data: bool = False
     # Visualization backend used when display_data is True: "rerun" or "foxglove".
     display_mode: str = "rerun"
@@ -306,7 +308,10 @@ class RolloutConfig:
         if needs_dataset and (self.dataset is None or not self.dataset.repo_id):
             raise ValueError(f"{self.strategy.type} strategy requires --dataset.repo_id to be set")
 
-        if isinstance(self.strategy, (BaseStrategyConfig, ActionProbeStrategyConfig)) and self.dataset is not None:
+        if (
+            isinstance(self.strategy, (BaseStrategyConfig, ActionProbeStrategyConfig))
+            and self.dataset is not None
+        ):
             raise ValueError(
                 f"{self.strategy.type} strategy does not record datasets. "
                 "Use sentry, highlight, dagger, or episodic for recording."

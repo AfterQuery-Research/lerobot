@@ -206,6 +206,7 @@ method ready:
 ```bash
 uv run lerobot-rollout \
     --strategy.type=base \
+    --log_file=logs/yam-rollout.log \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
@@ -223,7 +224,9 @@ uv run lerobot-rollout \
 ```
 
 Telemetry records requested, bounded, applied, and measured targets, tracking
-errors, and clipped joints.
+errors, and clipped joints. The application log records LeRobot messages,
+including remote chunk timing and control summaries, at `DEBUG` level in
+`logs/yam-rollout.log`. The file is appended across runs.
 
 ## Reset and safety behavior
 

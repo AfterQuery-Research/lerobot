@@ -119,6 +119,19 @@ def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
     assert cfg.device == "cpu"
 
 
+def test_rollout_log_file_creates_parent_and_configures_file_logging(tmp_path, monkeypatch):
+    import lerobot.scripts.lerobot_rollout as rollout_script
+
+    log_file = tmp_path / "nested" / "rollout.log"
+    configured = []
+    monkeypatch.setattr(rollout_script, "init_logging", lambda *, log_file: configured.append(log_file))
+
+    rollout_script._configure_rollout_logging(log_file)
+
+    assert log_file.parent.is_dir()
+    assert configured == [log_file]
+
+
 def test_remote_rollout_config_rejects_local_policy_path(monkeypatch):
     from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
     from tests.mocks.mock_robot import MockRobotConfig

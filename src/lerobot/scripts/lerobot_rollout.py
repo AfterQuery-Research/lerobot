@@ -153,6 +153,7 @@ Usage examples
 """
 
 import logging
+from pathlib import Path
 
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
@@ -202,10 +203,19 @@ from lerobot.utils.visualization_utils import init_visualization, shutdown_visua
 logger = logging.getLogger(__name__)
 
 
+def _configure_rollout_logging(log_file: Path | None) -> None:
+    if log_file is not None:
+        log_file = log_file.expanduser()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    init_logging(log_file=log_file)
+    if log_file is not None:
+        logger.info("Writing rollout application logs to %s", log_file)
+
+
 @parser.wrap()
 def rollout(cfg: RolloutConfig):
     """Main entry point for policy deployment."""
-    init_logging()
+    _configure_rollout_logging(cfg.log_file)
 
     if cfg.display_data:
         logger.info(
