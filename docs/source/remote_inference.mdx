@@ -12,16 +12,28 @@ network proxy can sit between the machines without changing either command.
 
 ## Install
 
+On a fresh Ubuntu machine, install the system packages needed to build the
+ARM64 dependencies that do not publish wheels:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential git linux-libc-dev pkg-config python3-dev
+```
+
+Install `uv`, then reopen the shell or source the environment file created by
+the installer. The commands below use `--locked`, so installation fails instead
+of modifying `uv.lock` when project metadata and the checked-in lock disagree.
+
 On the policy server:
 
 ```bash
-uv sync --extra remote --extra molmoact2
+uv sync --locked --extra remote --extra molmoact2
 ```
 
 On the dual-YAM computer:
 
 ```bash
-uv sync --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
+uv sync --locked --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
 ```
 
 The `bi_yam` extra uses the tested AfterQuery i2rt commit containing the
