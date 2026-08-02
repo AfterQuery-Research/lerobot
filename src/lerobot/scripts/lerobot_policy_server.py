@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import logging
-import os
 from dataclasses import dataclass, field
 
 import draccus
@@ -39,7 +38,6 @@ class PolicyServerAppConfig:
     max_task_chars: int = 4096
     command_ttl_ms: int = 200
     session_idle_timeout_s: float = 30.0
-    auth_token_env: str = "LEROBOT_REMOTE_AUTH_TOKEN"
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     tls_client_ca_path: str | None = None
@@ -49,12 +47,6 @@ class PolicyServerAppConfig:
 def run_server(cfg: PolicyServerAppConfig) -> None:
     if not cfg.policy.pretrained_name_or_path:
         raise ValueError("--policy.pretrained_name_or_path is required")
-    auth_token = os.getenv(cfg.auth_token_env) if cfg.auth_token_env else None
-    if cfg.auth_token_env and not auth_token:
-        raise ValueError(
-            f"authentication token environment variable {cfg.auth_token_env!r} is not set; "
-            "set it or explicitly pass --auth_token_env='' for trusted localhost use"
-        )
     server_config = RemotePolicyServerConfig(
         host=cfg.host,
         port=cfg.port,
@@ -64,7 +56,6 @@ def run_server(cfg: PolicyServerAppConfig) -> None:
         max_task_chars=cfg.max_task_chars,
         command_ttl_ms=cfg.command_ttl_ms,
         session_idle_timeout_s=cfg.session_idle_timeout_s,
-        auth_token=auth_token,
         tls_cert_path=cfg.tls_cert_path,
         tls_key_path=cfg.tls_key_path,
         tls_client_ca_path=cfg.tls_client_ca_path,

@@ -78,7 +78,7 @@ def running_server():
             camera_keys=CAMERA_KEYS,
         )
     )
-    config = RemotePolicyServerConfig(port=port, auth_token="secret", session_idle_timeout_s=10)
+    config = RemotePolicyServerConfig(port=port, session_idle_timeout_s=10)
     server, _ = create_grpc_server(config, backend)
     server.start()
     try:
@@ -87,11 +87,10 @@ def running_server():
         server.stop(grace=0).wait()
 
 
-def make_client(address: str, token: str = "secret") -> RemotePolicyClient:
+def make_client(address: str) -> RemotePolicyClient:
     return RemotePolicyClient(
         RemotePolicyClientConfig(
             server_address=address,
-            auth_token=token,
             connect_timeout_s=2,
             inference_timeout_s=2,
         )
@@ -125,13 +124,6 @@ def test_end_to_end_session_and_inference(running_server):
     assert np.allclose(action.actions, [[0.1, 0.2, 0.3]] * 4)
     assert action.observation_sequence == 1
     client.reset()
-    client.close()
-
-
-def test_authentication_is_required(running_server):
-    client = make_client(running_server, token="wrong")
-    with pytest.raises(RemotePolicyError, match="UNAUTHENTICATED"):
-        client.connect(make_manifest())
     client.close()
 
 
@@ -175,7 +167,6 @@ def test_tls_session_and_inference(tmp_path):
     server, _ = create_grpc_server(
         RemotePolicyServerConfig(
             port=port,
-            auth_token="secret",
             tls_cert_path=str(certificate),
             tls_key_path=str(private_key),
         ),
@@ -185,7 +176,6 @@ def test_tls_session_and_inference(tmp_path):
     client = RemotePolicyClient(
         RemotePolicyClientConfig(
             server_address=f"127.0.0.1:{port}",
-            auth_token="secret",
             tls_root_cert_path=str(certificate),
             tls_server_name_override="localhost",
             connect_timeout_s=2,
@@ -239,8 +229,8 @@ def test_another_robot_can_connect_after_idle_session_expires():
     )
     server, _ = create_grpc_server(RemotePolicyServerConfig(port=port, session_idle_timeout_s=0.05), backend)
     server.start()
-    first = make_client(f"127.0.0.1:{port}", token="")
-    second = make_client(f"127.0.0.1:{port}", token="")
+    first = make_client(f"127.0.0.1:{port}")
+    second = make_client(f"127.0.0.1:{port}")
     try:
         first.connect(make_manifest(), task="test task", client_instance_id="first")
         time.sleep(0.08)
@@ -291,7 +281,7 @@ def test_session_prepares_exact_task_before_connect_returns():
     backend = RecordingBackend()
     server, _ = create_grpc_server(RemotePolicyServerConfig(port=port), backend)
     server.start()
-    client = make_client(f"127.0.0.1:{port}", token="")
+    client = make_client(f"127.0.0.1:{port}")
     try:
         client.connect(make_manifest(), task="pick up the cube")
         assert [(manifest.robot_id, task) for manifest, task in backend.prepared] == [

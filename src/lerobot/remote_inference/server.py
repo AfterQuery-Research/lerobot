@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import hmac
 import logging
 import threading
 import time
@@ -45,7 +44,6 @@ class RemotePolicyServerConfig:
     command_ttl_ms: int = 200
     session_idle_timeout_s: float = 30.0
     max_workers: int = 2
-    auth_token: str | None = None
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     tls_client_ca_path: str | None = None
@@ -93,15 +91,6 @@ class RemotePolicyService(remote_policy_pb2_grpc.RemotePolicyServiceServicer):
     def _abort(self, context: grpc.ServicerContext, code: grpc.StatusCode, detail: str):
         context.abort(code, detail)
 
-    def _authenticate(self, context: grpc.ServicerContext) -> None:
-        if self._config.auth_token is None:
-            return
-        metadata = dict(context.invocation_metadata())
-        supplied = metadata.get("authorization", "")
-        expected = f"Bearer {self._config.auth_token}"
-        if not hmac.compare_digest(supplied, expected):
-            self._abort(context, grpc.StatusCode.UNAUTHENTICATED, "invalid authorization token")
-
     def _active_session_locked(self, session_id: str, context: grpc.ServicerContext) -> _Session:
         session = self._session
         if session is None or session.session_id != session_id:
@@ -116,7 +105,6 @@ class RemotePolicyService(remote_policy_pb2_grpc.RemotePolicyServiceServicer):
 
     def GetServerInfo(self, request, context):  # noqa: N802
         del request
-        self._authenticate(context)
         return remote_policy_pb2.ServerInfo(
             protocol_version=PROTOCOL_VERSION,
             service_name=self._config.service_name,
@@ -125,7 +113,6 @@ class RemotePolicyService(remote_policy_pb2_grpc.RemotePolicyServiceServicer):
         )
 
     def OpenSession(self, request, context):  # noqa: N802
-        self._authenticate(context)
         try:
             embodiment = embodiment_from_proto(request.embodiment)
             self._backend.manifest.assert_compatible(embodiment)
@@ -181,7 +168,6 @@ class RemotePolicyService(remote_policy_pb2_grpc.RemotePolicyServiceServicer):
         )
 
     def Infer(self, request, context):  # noqa: N802
-        self._authenticate(context)
         if len(request.task) > self._config.max_task_chars:
             self._abort(context, grpc.StatusCode.INVALID_ARGUMENT, "task exceeds the configured length limit")
         with self._lock:
@@ -229,7 +215,6 @@ class RemotePolicyService(remote_policy_pb2_grpc.RemotePolicyServiceServicer):
         return response
 
     def ResetSession(self, request, context):  # noqa: N802
-        self._authenticate(context)
         with self._lock:
             session = self._active_session_locked(request.session_id, context)
             if session.inference_active:
@@ -240,7 +225,6 @@ class RemotePolicyService(remote_policy_pb2_grpc.RemotePolicyServiceServicer):
         return remote_policy_pb2.Empty()
 
     def CloseSession(self, request, context):  # noqa: N802
-        self._authenticate(context)
         with self._lock:
             session = self._active_session_locked(request.session_id, context)
             if session.inference_active:

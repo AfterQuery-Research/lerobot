@@ -89,7 +89,6 @@ class RemoteInferenceConfig(InferenceEngineConfig):
     jpeg_quality: int = 95
     image_encoding: str = "jpeg"
     prefetch_threshold: int = 20
-    auth_token_env: str = "LEROBOT_REMOTE_AUTH_TOKEN"
     tls_root_cert_path: str | None = None
     tls_client_cert_path: str | None = None
     tls_client_key_path: str | None = None
@@ -162,7 +161,6 @@ def create_inference_engine(
                 inference_timeout_s=config.inference_timeout_s,
                 max_message_bytes=config.max_message_bytes,
                 jpeg_quality=config.jpeg_quality,
-                auth_token_env=config.auth_token_env,
                 tls_root_cert_path=config.tls_root_cert_path,
                 tls_client_cert_path=config.tls_client_cert_path,
                 tls_client_key_path=config.tls_client_key_path,

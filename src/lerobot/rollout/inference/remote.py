@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 import uuid
@@ -56,7 +55,6 @@ class RemoteEngineSettings:
     inference_timeout_s: float
     max_message_bytes: int
     jpeg_quality: int
-    auth_token_env: str
     tls_root_cert_path: str | None
     tls_client_cert_path: str | None
     tls_client_key_path: str | None
@@ -166,7 +164,6 @@ class RemoteInferenceEngine(InferenceEngine):
             return
         from lerobot.remote_inference.client import RemotePolicyClient, RemotePolicyClientConfig
 
-        auth_token = os.getenv(self._settings.auth_token_env) if self._settings.auth_token_env else None
         self._client = RemotePolicyClient(
             RemotePolicyClientConfig(
                 server_address=self._settings.server_address,
@@ -174,7 +171,6 @@ class RemoteInferenceEngine(InferenceEngine):
                 inference_timeout_s=self._settings.inference_timeout_s,
                 max_message_bytes=self._settings.max_message_bytes,
                 jpeg_quality=self._settings.jpeg_quality,
-                auth_token=auth_token,
                 tls_root_cert_path=self._settings.tls_root_cert_path,
                 tls_client_cert_path=self._settings.tls_client_cert_path,
                 tls_client_key_path=self._settings.tls_client_key_path,

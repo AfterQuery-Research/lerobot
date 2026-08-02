@@ -45,7 +45,6 @@ class RemotePolicyClientConfig:
     inference_timeout_s: float = 2.0
     max_message_bytes: int = 16 * 1024 * 1024
     jpeg_quality: int = 95
-    auth_token: str | None = None
     tls_root_cert_path: str | None = None
     tls_client_cert_path: str | None = None
     tls_client_key_path: str | None = None
@@ -82,9 +81,6 @@ class RemotePolicyClient:
         self._config = config
         self._channel = self._make_channel()
         self._stub = remote_policy_pb2_grpc.RemotePolicyServiceStub(self._channel)
-        self._metadata = (
-            (("authorization", f"Bearer {config.auth_token}"),) if config.auth_token is not None else None
-        )
         self._embodiment: EmbodimentManifest | None = None
         self._session: RemotePolicySession | None = None
         self._infer_lock = threading.Lock()
@@ -136,7 +132,6 @@ class RemotePolicyClient:
             info = self._stub.GetServerInfo(
                 remote_policy_pb2.Empty(),
                 timeout=self._config.connect_timeout_s,
-                metadata=self._metadata,
             )
             if info.protocol_version != PROTOCOL_VERSION or not info.ready:
                 raise RemotePolicyError("remote policy server is not compatible or ready")
@@ -150,7 +145,6 @@ class RemotePolicyClient:
                     task=task,
                 ),
                 timeout=self._config.connect_timeout_s,
-                metadata=self._metadata,
             )
             model = model_from_proto(response.model)
             model.assert_compatible(embodiment)
@@ -188,7 +182,6 @@ class RemotePolicyClient:
             response = self._stub.Infer(
                 request,
                 timeout=self._config.inference_timeout_s,
-                metadata=self._metadata,
                 wait_for_ready=False,
             )
             action = action_from_proto(
@@ -214,7 +207,6 @@ class RemotePolicyClient:
             self._stub.ResetSession(
                 remote_policy_pb2.SessionRequest(session_id=self._session.session_id),
                 timeout=self._config.connect_timeout_s,
-                metadata=self._metadata,
             )
         except grpc.RpcError as exc:
             raise RemotePolicyError(f"could not reset remote policy session: {exc.code().name}") from exc
@@ -226,7 +218,6 @@ class RemotePolicyClient:
                 self._stub.CloseSession(
                     remote_policy_pb2.SessionRequest(session_id=self._session.session_id),
                     timeout=self._config.connect_timeout_s,
-                    metadata=self._metadata,
                 )
         self._session = None
         self._embodiment = None

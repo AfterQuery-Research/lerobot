@@ -29,7 +29,8 @@ The released dual-YAM checkpoint contract uses normalization tag
 state/action values in left-arm-then-right-arm order.
 
 ```bash
-export LEROBOT_REMOTE_AUTH_TOKEN="$(openssl rand -hex 32)"
+# Note an IP address reachable from the robot computer.
+hostname -I
 
 uv run lerobot-policy-server \
     --policy.pretrained_name_or_path=allenai/MolmoAct2-BimanualYAM \
@@ -44,7 +45,8 @@ uv run lerobot-policy-server \
 
 The server loads and warms the model before listening. Opening a session also
 warms the exact camera dimensions and task prompt before the client is allowed
-to arm the robot. Only one robot session is accepted at a time.
+to arm the robot. Only one robot session is accepted at a time. The client only
+needs the server's reachable IP address and port.
 
 For a production deployment, add `--policy.revision=<commit SHA>` and use the
 same expected model ID on the client so a moving Hub branch cannot change the
@@ -52,15 +54,14 @@ loaded checkpoint during a later restart.
 
 ## Test with the dual-YAM simulator
 
-Export the same token on the client, then run the shared-world MuJoCo simulator:
+Run the shared-world MuJoCo simulator, replacing `<server-ip>` with the policy
+server's reachable IP address:
 
 ```bash
-export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
-
 uv run lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
-    --inference.server_address=policy-host:8081 \
+    --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=bi_yam_simulator \
     --robot.backend=mujoco \
@@ -112,12 +113,10 @@ arm, does not open cameras, and disables policy control. Do not set
 `allow_gripper_calibration` during an autonomous rollout.
 
 ```bash
-export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
-
 uv run lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
-    --inference.server_address=127.0.0.1:8081 \
+    --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=afterquery_dual_yam \
     --task="Pick up the object with both arms" \
@@ -137,9 +136,13 @@ limits on the robot computer.
 
 ## Secure the connection
 
-An authentication token identifies an authorized client but does not encrypt
-traffic. For an untrusted network, use TLS, mutual TLS, a private VPN, or an SSH
-tunnel. Do not expose an insecure server directly to the public internet.
+The direct IP connection does not require a separate credential. With the server
+listening on `0.0.0.0` and TCP port 8081 reachable, setting
+`--inference.server_address=<server-ip>:8081` is sufficient.
+
+Direct connections are unencrypted. Keep port 8081 restricted to the lab network
+or the robot computer with a cloud firewall. For an untrusted network, use TLS,
+mutual TLS, a private VPN, or an SSH tunnel.
 
 An SSH tunnel keeps the server bound to localhost:
 
@@ -165,10 +168,6 @@ For TLS, configure `--tls_cert_path` and `--tls_key_path` on the server and
 `--tls_client_ca_path` on the server plus the matching
 `--inference.tls_client_cert_path` and `--inference.tls_client_key_path` on the
 client for mutual TLS.
-
-The server refuses to start when its default token environment variable is
-missing. For intentionally unauthenticated localhost operation inside a
-trusted tunnel, pass `--auth_token_env=''` explicitly on the server.
 
 ## Failure behavior
 

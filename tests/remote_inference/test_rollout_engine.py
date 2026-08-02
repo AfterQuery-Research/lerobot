@@ -99,7 +99,6 @@ def _settings(address: str) -> RemoteEngineSettings:
         inference_timeout_s=0.3,
         max_message_bytes=1024 * 1024,
         jpeg_quality=95,
-        auth_token_env="",
         tls_root_cert_path=None,
         tls_client_cert_path=None,
         tls_client_key_path=None,
