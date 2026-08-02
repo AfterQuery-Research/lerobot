@@ -125,14 +125,20 @@ and [six arm joints at exactly `0.0` radians followed by a `0.0` gripper for the
 right arm](https://github.com/allenai/molmoact2/blob/main/examples/yam/configs/yam_right.yaml#L10-L11).
 The AQ adapter preserves that exact left-then-right ordering and sends each
 seven-value arm target directly to i2rt without changing the six joint values.
+For the AfterQuery hardware preset, both reset grippers are intentionally set to
+`1.0` (open), based on supervised physical testing. Its complete reset vector is
+therefore `[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]`. This differs from the
+public MolmoAct2 example only in the right gripper; all twelve arm-joint targets
+remain exactly `0.0` radians.
 
 The [public launcher](https://github.com/allenai/molmoact2/blob/main/examples/yam/launch_yaml_eval_molmoact.py)
 moves to that pose after constructing the hardware, before every rollout, and
 again at process exit. The AQ client has the same normal lifecycle: it resets
 before policy control, the episodic strategy repeats the reset before every
 policy episode, and LeRobot's default `--return_to_initial_position=true` parks
-at that pose during teardown. Because policy execution is remote here, the AQ
-client completes server negotiation before arming and starting the first reset.
+at the AfterQuery both-open pose during teardown. Because policy execution is
+remote here, the AQ client completes server negotiation before arming and
+starting the first reset.
 
 The reset follows MolmoAct2's absolute interpolation parameters: waypoints no
 more than `0.01` apart, at 30 Hz, capped at 100 interpolation steps. The AQ client

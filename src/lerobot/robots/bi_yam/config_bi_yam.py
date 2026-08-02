@@ -52,6 +52,11 @@ MOLMOACT2_BIMANUAL_YAM_START_POSITION = (
     *MOLMOACT2_YAM_LEFT_START_POSITION,
     *MOLMOACT2_YAM_RIGHT_START_POSITION,
 )
+AFTERQUERY_BIMANUAL_YAM_START_POSITION = (
+    *MOLMOACT2_YAM_LEFT_START_POSITION,
+    *MOLMOACT2_YAM_RIGHT_START_POSITION[:6],
+    1.0,
+)
 
 
 def _default_joint_limits() -> list[tuple[float, float]]:
@@ -279,5 +284,5 @@ class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=_afterquery_cameras)
     max_joint_delta: float = 0.03
     max_gripper_delta: float = 0.03
-    policy_start_position: tuple[float, ...] | None = MOLMOACT2_BIMANUAL_YAM_START_POSITION
+    policy_start_position: tuple[float, ...] | None = AFTERQUERY_BIMANUAL_YAM_START_POSITION
     policy_reset_tolerance: float = 0.035

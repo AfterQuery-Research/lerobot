@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from lerobot.robots.bi_yam import (
+    AFTERQUERY_BIMANUAL_YAM_START_POSITION,
     MOLMOACT2_BIMANUAL_YAM_START_POSITION,
     MOLMOACT2_YAM_LEFT_START_POSITION,
     MOLMOACT2_YAM_RIGHT_START_POSITION,
@@ -318,7 +319,8 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
         *MOLMOACT2_YAM_LEFT_START_POSITION,
         *MOLMOACT2_YAM_RIGHT_START_POSITION,
     ) == MOLMOACT2_BIMANUAL_YAM_START_POSITION
-    assert config.policy_start_position == MOLMOACT2_BIMANUAL_YAM_START_POSITION
+    assert (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0) == AFTERQUERY_BIMANUAL_YAM_START_POSITION
+    assert config.policy_start_position == AFTERQUERY_BIMANUAL_YAM_START_POSITION
     assert config.policy_reset_step_size == 0.01
     assert config.policy_reset_max_steps == 100
     assert config.policy_reset_fps == 30
@@ -638,7 +640,7 @@ def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):
 
 
 def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_path):
-    target = MOLMOACT2_BIMANUAL_YAM_START_POSITION
+    target = AFTERQUERY_BIMANUAL_YAM_START_POSITION
     config = make_config(
         tmp_path,
         policy_start_position=target,
