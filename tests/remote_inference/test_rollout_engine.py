@@ -47,6 +47,19 @@ class CountingBackend(DeterministicPolicyBackend):
         return super().infer(observation)
 
 
+class BlockingBackend(CountingBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def infer(self, observation):
+        self.started.set()
+        if not self.release.wait(timeout=2.0):
+            raise TimeoutError("test backend was not released")
+        return super().infer(observation)
+
+
 class FakeRobot:
     id = "fake-robot"
     robot_type = "fake"
@@ -158,6 +171,31 @@ def test_remote_engine_runs_real_transport_without_duplicate_requests():
         _wait_for(lambda: backend.inference_count == 2)
         assert not engine.failed
     finally:
+        engine.stop()
+        server.stop(grace=0).wait()
+
+
+def test_empty_queue_does_not_advance_execution_tick_or_discard_first_chunk():
+    port = _free_port()
+    backend = BlockingBackend()
+    server, _ = create_grpc_server(RemotePolicyServerConfig(port=port), backend)
+    server.start()
+    engine = _engine(f"127.0.0.1:{port}")
+    try:
+        engine.start()
+        engine.resume()
+        engine.notify_observation(_observation())
+        assert backend.started.wait(timeout=1.0)
+
+        for _ in range(10):
+            assert engine.get_action(None) is None
+
+        backend.release.set()
+        _wait_for(lambda: engine.action_queue_depth == 4)
+        assert np.allclose(engine.get_action(None).numpy(), [0.25, 0.75])
+        assert engine.action_queue_depth == 3
+    finally:
+        backend.release.set()
         engine.stop()
         server.stop(grace=0).wait()
 

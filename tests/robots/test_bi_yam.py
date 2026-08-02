@@ -609,7 +609,9 @@ def test_send_action_rejects_invalid_schema_and_values(tmp_path, mutate, message
 
 
 def test_send_action_clips_limits_and_delta_and_synchronizes_workers(tmp_path):
-    robot, workers = make_robot(tmp_path)
+    telemetry_path = tmp_path / "control.jsonl"
+    config = make_config(tmp_path, control_telemetry_path=telemetry_path)
+    robot, workers = make_robot(tmp_path, config=config)
     robot.connect()
     robot.arm()
     action = dict.fromkeys(YAM_SCALAR_KEYS, 10.0)
@@ -625,6 +627,16 @@ def test_send_action_clips_limits_and_delta_and_synchronizes_workers(tmp_path):
     assert left_command.execute_at_ns == right_command.execute_at_ns
     assert (*left_command.positions, *right_command.positions) == pytest.approx(expected)
     robot.disconnect()
+
+    record = json.loads(telemetry_path.read_text().strip())
+    assert record["names"] == list(YAM_SCALAR_KEYS)
+    assert record["requested"] == pytest.approx([10.0] * 14)
+    assert record["applied"] == pytest.approx(expected)
+    assert record["measured_before"] == pytest.approx([0.0] * 14)
+    assert record["measured_after"] == pytest.approx(expected)
+    assert record["applied_tracking_error"] == pytest.approx([0.0] * 14)
+    assert record["bound_clipped"] == list(YAM_SCALAR_KEYS)
+    assert record["delta_clipped"] == list(YAM_SCALAR_KEYS)
 
 
 def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):

@@ -253,7 +253,7 @@ class RemoteInferenceEngine(InferenceEngine):
             action = self._action_queue.popleft() if self._action_queue else None
             if action is not None:
                 self._last_executed_tick = self._current_tick
-            self._current_tick += 1
+                self._current_tick += 1
             should_request = len(self._action_queue) <= self._settings.prefetch_threshold
         if should_request:
             self._observation_ready.set()

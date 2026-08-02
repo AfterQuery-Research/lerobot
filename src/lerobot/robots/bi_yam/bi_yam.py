@@ -14,13 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import draccus
 import numpy as np
@@ -71,6 +72,8 @@ class BiYAMFollower(Robot):
         self._connected = False
         self._armed = False
         self._command_sequence = 0
+        self._control_telemetry_file: TextIO | None = None
+        self._last_control_summary_ns = 0
 
     @property
     def observation_features(self) -> dict[str, type | tuple[int, int, int]]:
@@ -126,7 +129,9 @@ class BiYAMFollower(Robot):
             if self.config.calibration_side is None:
                 for camera in self.cameras.values():
                     camera.connect()
+            self._open_control_telemetry()
         except Exception:
+            self._close_control_telemetry()
             self._cleanup_resources(list(self.cameras.values()))
             self._workers.clear()
             self._states.clear()
@@ -213,8 +218,18 @@ class BiYAMFollower(Robot):
             self._safe_idle_workers()
             raise
         present = self._control_positions(states)
+        bounded = np.clip(requested, *self._operational_bounds())
         applied = self._apply_safety_limits(requested, present)
-        return self._dispatch_positions(applied)
+        applied_action = self._dispatch_positions(applied)
+        measured = self._control_positions(self._states)
+        self._record_control_telemetry(
+            requested=requested,
+            bounded=bounded,
+            applied=applied,
+            measured_before=present,
+            measured_after=measured,
+        )
+        return applied_action
 
     def reset_for_policy(self) -> RobotAction | None:
         """Move to the configured policy start pose before autonomous control."""
@@ -305,6 +320,7 @@ class BiYAMFollower(Robot):
     def disconnect(self) -> None:
         self._require_resources()
         errors = self._cleanup_resources(list(self.cameras.values()))
+        self._close_control_telemetry()
         self._connected = False
         self._armed = False
         self._states.clear()
@@ -312,6 +328,75 @@ class BiYAMFollower(Robot):
         if errors:
             raise RuntimeError("BiYAM cleanup failed: " + "; ".join(errors))
         logger.info("%s disconnected", self)
+
+    def _open_control_telemetry(self) -> None:
+        path = self.config.control_telemetry_path
+        if path is None or self.config.calibration_side is not None:
+            return
+        path = Path(path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._control_telemetry_file = path.open("w", encoding="utf-8", buffering=1)
+        logger.info("Writing YAM control telemetry to %s", path)
+
+    def _close_control_telemetry(self) -> None:
+        if self._control_telemetry_file is not None:
+            with suppress(OSError):
+                self._control_telemetry_file.close()
+            self._control_telemetry_file = None
+
+    def _record_control_telemetry(
+        self,
+        *,
+        requested: np.ndarray,
+        bounded: np.ndarray,
+        applied: np.ndarray,
+        measured_before: np.ndarray,
+        measured_after: np.ndarray,
+    ) -> None:
+        bound_clipped = [
+            key
+            for key, raw, limited in zip(YAM_SCALAR_KEYS, requested, bounded, strict=True)
+            if not np.isclose(raw, limited, rtol=0.0, atol=1e-9)
+        ]
+        delta_clipped = [
+            key
+            for key, limited, dispatched in zip(YAM_SCALAR_KEYS, bounded, applied, strict=True)
+            if not np.isclose(limited, dispatched, rtol=0.0, atol=1e-9)
+        ]
+        requested_error = requested - measured_after
+        applied_error = applied - measured_after
+        timestamp_ns = self._monotonic_ns()
+        record = {
+            "sequence": self._command_sequence,
+            "monotonic_ns": timestamp_ns,
+            "names": list(YAM_SCALAR_KEYS),
+            "requested": requested.tolist(),
+            "bounded": bounded.tolist(),
+            "applied": applied.tolist(),
+            "measured_before": measured_before.tolist(),
+            "measured_after": measured_after.tolist(),
+            "requested_tracking_error": requested_error.tolist(),
+            "applied_tracking_error": applied_error.tolist(),
+            "bound_clipped": bound_clipped,
+            "delta_clipped": delta_clipped,
+        }
+        if self._control_telemetry_file is not None:
+            try:
+                self._control_telemetry_file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            except OSError as exc:
+                logger.warning("Disabling YAM control telemetry after write failure: %s", exc)
+                self._close_control_telemetry()
+
+        interval_ns = int(self.config.control_telemetry_console_interval_s * 1e9)
+        if interval_ns == 0 or timestamp_ns - self._last_control_summary_ns >= interval_ns:
+            logger.info(
+                "YAM control seq=%d max_applied_tracking_error=%.4f bound_clipped=%s delta_clipped=%s",
+                self._command_sequence,
+                float(np.max(np.abs(applied_error))),
+                bound_clipped,
+                delta_clipped,
+            )
+            self._last_control_summary_ns = timestamp_ns
 
     def _require_resources(self) -> None:
         if not self._connected and not self._workers:

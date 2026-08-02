@@ -181,6 +181,7 @@ uv run lerobot-rollout \
     --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=afterquery_dual_yam \
+    --robot.control_telemetry_path=outputs/yam-control.jsonl \
     --task="pick up the object" \
     --fps=30 \
     --duration=60
@@ -189,6 +190,11 @@ uv run lerobot-rollout \
 After server negotiation succeeds, this command arms the robot and immediately
 starts the canonical reset trajectory before sending any observation to the
 policy. Clear the workspace and keep the hardware stop ready before launching it.
+The optional telemetry file records every requested, bounded, applied, and
+measured 14-D target, requested and applied tracking errors, and the joint names
+clipped by operational bounds or per-tick deltas. Empty action-queue iterations
+do not advance the execution tick, so inference latency does not discard the
+beginning of the first action chunk before the robot has moved.
 
 The generic `bi_yam_follower` type remains available for other installations;
 its channels, cameras, and any explicit gripper overrides can be supplied with

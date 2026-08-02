@@ -16,6 +16,7 @@
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from lerobot.cameras import CameraConfig
@@ -166,6 +167,8 @@ class BiYAMFollowerConfig(RobotConfig):
     gripper_state_tolerance: float = 0.15
     max_joint_delta: float = 0.1
     max_gripper_delta: float = 0.1
+    control_telemetry_path: Path | None = None
+    control_telemetry_console_interval_s: float = 1.0
 
     # A configured pose is reached before policy control and between policy episodes.
     policy_start_position: tuple[float, ...] | None = None
@@ -198,6 +201,11 @@ class BiYAMFollowerConfig(RobotConfig):
             raise ValueError("command_lead_time_s must be non-negative")
         if not math.isfinite(self.gripper_state_tolerance) or self.gripper_state_tolerance < 0:
             raise ValueError("gripper_state_tolerance must be non-negative")
+        if (
+            not math.isfinite(self.control_telemetry_console_interval_s)
+            or self.control_telemetry_console_interval_s < 0
+        ):
+            raise ValueError("control_telemetry_console_interval_s must be non-negative")
         if self.policy_reset_max_steps <= 0:
             raise ValueError("policy_reset_max_steps must be positive")
 
