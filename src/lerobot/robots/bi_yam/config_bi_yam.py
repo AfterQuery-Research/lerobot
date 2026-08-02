@@ -57,6 +57,9 @@ class YAMArmConfig:
     channel: str
     arm_type: str = "yam"
     gripper_type: str = "linear_4310"
+    # Raw i2rt [closed, open] endpoints. Supplying these skips moving calibration.
+    gripper_limits_override: tuple[float, float] | None = None
+    allow_gripper_calibration: bool = False
     sim: bool = False
     command_ttl_s: float = 0.2
     worker_poll_interval_s: float = 0.004
@@ -69,6 +72,32 @@ class YAMArmConfig:
             raise ValueError("command_ttl_s must be positive")
         if not math.isfinite(self.worker_poll_interval_s) or self.worker_poll_interval_s <= 0:
             raise ValueError("worker_poll_interval_s must be positive")
+        if self.gripper_limits_override is not None:
+            if len(self.gripper_limits_override) != 2:
+                raise ValueError("gripper_limits_override must contain [closed, open]")
+            closed, open_ = self.gripper_limits_override
+            if not math.isfinite(closed) or not math.isfinite(open_) or closed == open_:
+                raise ValueError("gripper_limits_override must contain two distinct finite values")
+            if self.allow_gripper_calibration:
+                raise ValueError(
+                    "gripper_limits_override and allow_gripper_calibration cannot be set together"
+                )
+
+    @property
+    def has_fixed_gripper_calibration(self) -> bool:
+        return (
+            self.sim
+            or self.gripper_type in {"no_gripper", "yam_teaching_handle"}
+            or self.gripper_limits_override is not None
+        )
+
+    def validate_hardware_startup(self) -> None:
+        if not self.has_fixed_gripper_calibration and not self.allow_gripper_calibration:
+            raise RuntimeError(
+                f"Refusing to open {self.channel}: gripper {self.gripper_type!r} needs raw "
+                "[closed, open] limits. Set gripper_limits_override, or explicitly set "
+                "allow_gripper_calibration=true for a supervised calibration that moves the gripper."
+            )
 
 
 @RobotConfig.register_subclass("bi_yam_follower")

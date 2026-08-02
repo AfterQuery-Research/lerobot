@@ -32,7 +32,7 @@ state/action values in left-arm-then-right-arm order.
 export LEROBOT_REMOTE_AUTH_TOKEN="$(openssl rand -hex 32)"
 
 uv run lerobot-policy-server \
-    --policy.pretrained_name_or_path=allenai/MolmoAct2 \
+    --policy.pretrained_name_or_path=allenai/MolmoAct2-BimanualYAM \
     --policy.policy_type=molmoact2 \
     --policy.norm_tag=yam_dual_molmoact2 \
     --policy.model_dtype=bfloat16 \
@@ -61,7 +61,7 @@ uv run lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
     --inference.server_address=policy-host:8081 \
-    --inference.requested_model_id=allenai/MolmoAct2 \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=bi_yam_simulator \
     --robot.backend=mujoco \
     --task="Pick up the object with both arms" \
@@ -82,6 +82,13 @@ Configure the two CAN interfaces and verify each arm independently before
 autonomous rollout. The physical adapter starts one isolated i2rt worker per
 arm and keeps both workers idle until server negotiation succeeds.
 
+An i2rt `linear_4310` gripper without a raw `[closed, open]` override normally
+performs a moving calibration while the robot is constructed. The adapter
+refuses that behavior by default, before opening the CAN interface. Record each
+arm's limits during a supervised one-arm-at-a-time calibration, then supply the
+values through `gripper_limits_override`. Do not enable moving calibration in an
+autonomous rollout configuration.
+
 ```bash
 export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
 
@@ -89,19 +96,29 @@ uv run lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
     --inference.server_address=policy-host:8081 \
-    --inference.requested_model_id=allenai/MolmoAct2 \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=bi_yam_follower \
-    --robot.left_arm_config.channel=can0 \
-    --robot.right_arm_config.channel=can1 \
+    --robot.left_arm_config.channel=can_yam_new \
+    --robot.left_arm_config.gripper_limits_override='[<left closed>, <left open>]' \
+    --robot.right_arm_config.channel=can_yam_old \
+    --robot.right_arm_config.gripper_limits_override='[<right closed>, <right open>]' \
     --robot.cameras='{
-      top: {type: realsense, serial_number_or_name: "<top serial>", width: 640, height: 480, fps: 30},
-      left: {type: realsense, serial_number_or_name: "<left serial>", width: 640, height: 480, fps: 30},
-      right: {type: realsense, serial_number_or_name: "<right serial>", width: 640, height: 480, fps: 30}
+      top: {type: intelrealsense, serial_number_or_name: "<top serial>", width: 640, height: 360, fps: 30},
+      left: {type: intelrealsense, serial_number_or_name: "<left serial>", width: 640, height: 360, fps: 30},
+      right: {type: intelrealsense, serial_number_or_name: "<right serial>", width: 640, height: 360, fps: 30}
     }' \
     --task="Pick up the object with both arms" \
     --fps=30 \
-    --duration=30
+    --duration=5 \
+    --return_to_initial_position=false
 ```
+
+The AfterQuery lab Raspberry Pi mapping is checked into
+`configs/deployment/afterquery_dual_yam_client.yaml`. Its two gripper overrides
+are intentionally `null`, so it cannot open either CAN interface until the
+supervised calibration values are filled in. It maps the front D435 to `top`,
+the two D405 wrist cameras to `left` and `right`, and uses an SSH-tunneled policy
+server at `127.0.0.1:8081`.
 
 Camera dictionary order is part of the model contract. A missing, extra, or
 reordered camera, state field, or action field makes session setup fail before
@@ -119,7 +136,7 @@ An SSH tunnel keeps the server bound to localhost:
 ```bash
 # Policy server
 uv run lerobot-policy-server \
-    --policy.pretrained_name_or_path=allenai/MolmoAct2 \
+    --policy.pretrained_name_or_path=allenai/MolmoAct2-BimanualYAM \
     --policy.policy_type=molmoact2 \
     --policy.norm_tag=yam_dual_molmoact2 \
     --policy.inference_action_mode=continuous \

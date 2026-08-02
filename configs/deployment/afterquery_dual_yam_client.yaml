@@ -1,0 +1,89 @@
+# AfterQuery lab dual-YAM client on the Raspberry Pi.
+#
+# This config is intentionally fail-closed. Populate each raw i2rt [closed, open]
+# gripper_limits_override after a supervised one-arm-at-a-time calibration. Do not
+# enable moving calibration in an autonomous rollout config.
+
+robot:
+  type: bi_yam_follower
+  id: afterquery_dual_yam
+
+  left_arm_config:
+    channel: can_yam_new
+    arm_type: yam
+    gripper_type: linear_4310
+    gripper_limits_override: null
+    allow_gripper_calibration: false
+    sim: false
+    command_ttl_s: 0.2
+    worker_poll_interval_s: 0.004
+    enable_auto_recovery: false
+
+  right_arm_config:
+    channel: can_yam_old
+    arm_type: yam
+    gripper_type: linear_4310
+    gripper_limits_override: null
+    allow_gripper_calibration: false
+    sim: false
+    command_ttl_s: 0.2
+    worker_poll_interval_s: 0.004
+    enable_auto_recovery: false
+
+  cameras:
+    top:
+      type: intelrealsense
+      serial_number_or_name: "262422074066"
+      width: 640
+      height: 360
+      fps: 30
+      use_rgb: true
+      use_depth: false
+      warmup_s: 2
+    left:
+      type: intelrealsense
+      serial_number_or_name: "323622270338"
+      width: 640
+      height: 360
+      fps: 30
+      use_rgb: true
+      use_depth: false
+      warmup_s: 2
+    right:
+      type: intelrealsense
+      serial_number_or_name: "323622270243"
+      width: 640
+      height: 360
+      fps: 30
+      use_rgb: true
+      use_depth: false
+      warmup_s: 2
+
+  startup_timeout_s: 15.0
+  state_timeout_s: 0.25
+  command_ack_timeout_s: 0.25
+  command_lead_time_s: 0.01
+  shutdown_timeout_s: 2.0
+  max_joint_delta: 0.03
+  max_gripper_delta: 0.03
+
+strategy:
+  type: base
+
+inference:
+  type: remote
+  # The policy server should remain on localhost and be reached through an SSH tunnel.
+  server_address: 127.0.0.1:8081
+  requested_model_id: allenai/MolmoAct2-BimanualYAM
+  connect_timeout_s: 10.0
+  inference_timeout_s: 10.0
+  image_encoding: jpeg
+  jpeg_quality: 95
+  prefetch_threshold: 20
+
+fps: 30
+duration: 5.0
+task: "pick up the water bottle"
+display_data: false
+play_sounds: false
+return_to_initial_position: false

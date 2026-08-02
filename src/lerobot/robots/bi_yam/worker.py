@@ -85,17 +85,27 @@ class ArmWorker(Protocol):
 
 
 def make_i2rt_backend(config: YAMArmConfig) -> ArmBackend:
+    config.validate_hardware_startup()
     try:
         from i2rt.robots.get_robot import get_yam_robot
         from i2rt.robots.utils import ArmType, GripperType
     except ImportError as exc:
         raise ImportError("i2rt is required to use the bi_yam_follower robot") from exc
 
+    arm_type = ArmType.from_string_name(config.arm_type)
+    gripper_type = GripperType.from_string_name(config.gripper_type)
+    gripper_limits_override = (
+        None
+        if config.gripper_limits_override is None
+        else np.asarray(config.gripper_limits_override, dtype=np.float64)
+    )
+
     return get_yam_robot(
         channel=config.channel,
-        arm_type=ArmType.from_string_name(config.arm_type),
-        gripper_type=GripperType.from_string_name(config.gripper_type),
+        arm_type=arm_type,
+        gripper_type=gripper_type,
         zero_gravity_mode=True,
+        gripper_limits_override=gripper_limits_override,
         sim=config.sim,
         enable_auto_recovery=config.enable_auto_recovery,
     )

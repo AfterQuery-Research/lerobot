@@ -60,6 +60,32 @@ class FakeBackend:
         self.close_calls += 1
 
 
+def install_fake_i2rt(monkeypatch, calls, backend):
+    class FakeArmType:
+        @classmethod
+        def from_string_name(cls, value):
+            return f"arm:{value}"
+
+    class FakeGripperType:
+        @classmethod
+        def from_string_name(cls, value):
+            return f"gripper:{value}"
+
+    i2rt = types.ModuleType("i2rt")
+    robots = types.ModuleType("i2rt.robots")
+    get_robot = types.ModuleType("i2rt.robots.get_robot")
+    utils = types.ModuleType("i2rt.robots.utils")
+    i2rt.__path__ = []
+    robots.__path__ = []
+    get_robot.get_yam_robot = lambda **kwargs: calls.append(kwargs) or backend
+    utils.ArmType = FakeArmType
+    utils.GripperType = FakeGripperType
+    monkeypatch.setitem(sys.modules, "i2rt", i2rt)
+    monkeypatch.setitem(sys.modules, "i2rt.robots", robots)
+    monkeypatch.setitem(sys.modules, "i2rt.robots.get_robot", get_robot)
+    monkeypatch.setitem(sys.modules, "i2rt.robots.utils", utils)
+
+
 def make_fake_backend(_config: YAMArmConfig) -> FakeBackend:
     return FakeBackend()
 
@@ -178,6 +204,8 @@ class FakeCamera:
 def make_config(tmp_path, **overrides) -> BiYAMFollowerConfig:
     values = {
         "calibration_dir": tmp_path,
+        "left_arm_config": YAMArmConfig(channel="can0", sim=True),
+        "right_arm_config": YAMArmConfig(channel="can1", sim=True),
         "command_lead_time_s": 0.0,
         "left_joint_limits": [(-1.0, 1.0)] * 6,
         "right_joint_limits": [(-1.0, 1.0)] * 6,
@@ -226,6 +254,45 @@ def test_standard_robot_factory_discovers_bi_yam_without_i2rt(tmp_path):
 
     assert isinstance(robot, BiYAMFollower)
     assert not robot.is_connected
+
+
+def test_calibration_status_reflects_fixed_gripper_limits(tmp_path):
+    uncalibrated = make_config(
+        tmp_path,
+        left_arm_config=YAMArmConfig(channel="can0"),
+        right_arm_config=YAMArmConfig(channel="can1", gripper_limits_override=(1.0, 0.0)),
+    )
+    calibrated = make_config(
+        tmp_path,
+        left_arm_config=YAMArmConfig(channel="can0", gripper_limits_override=(1.0, 0.0)),
+        right_arm_config=YAMArmConfig(channel="can1", gripper_limits_override=(1.0, 0.0)),
+    )
+
+    assert not make_robot(tmp_path, config=uncalibrated)[0].is_calibrated
+    assert make_robot(tmp_path, config=calibrated)[0].is_calibrated
+
+
+def test_connect_preflights_both_arms_before_creating_workers_or_connecting_cameras(tmp_path):
+    created_workers = []
+    camera = FakeCamera(3, 4)
+    camera_config = SimpleNamespace(fps=30, width=4, height=3, use_rgb=True, use_depth=False)
+    config = make_config(
+        tmp_path,
+        left_arm_config=YAMArmConfig(channel="can_left", gripper_limits_override=(1.0, 0.0)),
+        right_arm_config=YAMArmConfig(channel="can_right"),
+        cameras={"top": camera_config},
+    )
+    robot = BiYAMFollower(
+        config,
+        worker_factory=lambda side, arm_config: created_workers.append((side, arm_config)),
+        camera_factory=lambda _configs: {"top": camera},
+    )
+
+    with pytest.raises(RuntimeError, match="Unsafe right arm configuration"):
+        robot.connect()
+
+    assert created_workers == []
+    assert not camera.is_connected
 
 
 def test_connect_stays_disarmed_and_observation_uses_ordered_state_and_camera(tmp_path):
@@ -457,30 +524,7 @@ def test_second_worker_start_failure_closes_first_worker(tmp_path):
 def test_i2rt_factory_forwards_hardware_and_sim_configuration(monkeypatch):
     calls = []
     backend = FakeBackend()
-
-    class FakeArmType:
-        @classmethod
-        def from_string_name(cls, value):
-            return f"arm:{value}"
-
-    class FakeGripperType:
-        @classmethod
-        def from_string_name(cls, value):
-            return f"gripper:{value}"
-
-    i2rt = types.ModuleType("i2rt")
-    robots = types.ModuleType("i2rt.robots")
-    get_robot = types.ModuleType("i2rt.robots.get_robot")
-    utils = types.ModuleType("i2rt.robots.utils")
-    i2rt.__path__ = []
-    robots.__path__ = []
-    get_robot.get_yam_robot = lambda **kwargs: calls.append(kwargs) or backend
-    utils.ArmType = FakeArmType
-    utils.GripperType = FakeGripperType
-    monkeypatch.setitem(sys.modules, "i2rt", i2rt)
-    monkeypatch.setitem(sys.modules, "i2rt.robots", robots)
-    monkeypatch.setitem(sys.modules, "i2rt.robots.get_robot", get_robot)
-    monkeypatch.setitem(sys.modules, "i2rt.robots.utils", utils)
+    install_fake_i2rt(monkeypatch, calls, backend)
 
     result = make_i2rt_backend(
         YAMArmConfig(
@@ -499,7 +543,66 @@ def test_i2rt_factory_forwards_hardware_and_sim_configuration(monkeypatch):
             "arm_type": "arm:yam_pro",
             "gripper_type": "gripper:linear_4310",
             "zero_gravity_mode": True,
+            "gripper_limits_override": None,
             "sim": True,
             "enable_auto_recovery": True,
         }
     ]
+
+
+def test_i2rt_factory_forwards_gripper_limits_without_calibration(monkeypatch):
+    calls = []
+    backend = FakeBackend()
+    install_fake_i2rt(monkeypatch, calls, backend)
+
+    result = make_i2rt_backend(YAMArmConfig(channel="can7", gripper_limits_override=(1.25, -0.75)))
+
+    assert result is backend
+    assert len(calls) == 1
+    np.testing.assert_array_equal(calls[0]["gripper_limits_override"], [1.25, -0.75])
+    assert calls[0]["sim"] is False
+
+
+def test_i2rt_factory_refuses_unsupervised_hardware_gripper_calibration(monkeypatch):
+    calls = []
+    install_fake_i2rt(monkeypatch, calls, FakeBackend())
+
+    with pytest.raises(RuntimeError, match="Refusing to open can7"):
+        make_i2rt_backend(YAMArmConfig(channel="can7"))
+
+    assert calls == []
+
+
+def test_i2rt_factory_requires_explicit_opt_in_for_moving_calibration(monkeypatch):
+    calls = []
+    backend = FakeBackend()
+    install_fake_i2rt(monkeypatch, calls, backend)
+
+    result = make_i2rt_backend(YAMArmConfig(channel="can7", allow_gripper_calibration=True))
+
+    assert result is backend
+    assert len(calls) == 1
+    assert calls[0]["gripper_limits_override"] is None
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        (0.0, 0.0),
+        (float("nan"), 1.0),
+        (0.0, float("inf")),
+        (0.0,),
+    ],
+)
+def test_arm_config_rejects_invalid_gripper_limit_overrides(limits):
+    with pytest.raises(ValueError, match="gripper_limits_override"):
+        YAMArmConfig(channel="can7", gripper_limits_override=limits)
+
+
+def test_arm_config_rejects_override_with_calibration_opt_in():
+    with pytest.raises(ValueError, match="cannot be set together"):
+        YAMArmConfig(
+            channel="can7",
+            gripper_limits_override=(1.0, 0.0),
+            allow_gripper_calibration=True,
+        )

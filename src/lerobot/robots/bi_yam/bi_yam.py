@@ -81,7 +81,10 @@ class BiYAMFollower(Robot):
 
     @property
     def is_calibrated(self) -> bool:
-        return True
+        return all(
+            arm_config.has_fixed_gripper_calibration
+            for arm_config in (self.config.left_arm_config, self.config.right_arm_config)
+        )
 
     @property
     def is_armed(self) -> bool:
@@ -103,6 +106,12 @@ class BiYAMFollower(Robot):
             "left": self.config.left_arm_config,
             "right": self.config.right_arm_config,
         }
+        for side, arm_config in arm_configs.items():
+            try:
+                arm_config.validate_hardware_startup()
+            except RuntimeError as exc:
+                raise RuntimeError(f"Unsafe {side} arm configuration: {exc}") from exc
+
         self._workers = {}
         try:
             for side, arm_config in arm_configs.items():
