@@ -16,6 +16,7 @@
 
 import multiprocessing as mp
 import queue
+import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -87,6 +88,88 @@ class ArmWorker(Protocol):
     def close(self, timeout_s: float) -> None: ...
 
 
+class _I2RTHardwareBackend:
+    """Add deterministic thread shutdown around i2rt's hardware backend."""
+
+    def __init__(
+        self,
+        backend: ArmBackend,
+        motor_chain: Any,
+        control_threads: tuple[threading.Thread, ...],
+        *,
+        shutdown_timeout_s: float = 1.0,
+    ) -> None:
+        self._backend = backend
+        self._motor_chain = motor_chain
+        self._control_threads = control_threads
+        self._shutdown_timeout_s = shutdown_timeout_s
+        self._closed = False
+
+    def num_dofs(self) -> int:
+        return self._backend.num_dofs()
+
+    def get_joint_pos(self) -> np.ndarray:
+        return self._backend.get_joint_pos()
+
+    def get_robot_info(self) -> dict[str, Any]:
+        return self._backend.get_robot_info()
+
+    def command_joint_pos(self, joint_pos: np.ndarray) -> None:
+        self._backend.command_joint_pos(joint_pos)
+
+    def enter_gravity_comp_idle(self) -> None:
+        self._backend.enter_gravity_comp_idle()  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+
+        self._closed = True
+        deadline = time.monotonic() + self._shutdown_timeout_s
+
+        # i2rt 26ffe68 closes SocketCAN before its motor thread exits. Stop the
+        # producer threads explicitly so they cannot touch an invalid fd.
+        stop_event = getattr(self._backend, "_stop_event", None)
+        server_thread = getattr(self._backend, "_server_thread", None)
+        if stop_event is None or not isinstance(server_thread, threading.Thread):
+            self._backend.close()
+            return
+
+        stop_event.set()
+        self._join_thread(server_thread, deadline)
+        self._motor_chain.running = False
+        for thread in self._control_threads:
+            self._join_thread(thread, deadline)
+        self._backend.close()
+
+    @staticmethod
+    def _join_thread(thread: threading.Thread, deadline: float) -> None:
+        if thread is threading.current_thread():
+            raise RuntimeError("i2rt shutdown attempted to join the current thread")
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            raise RuntimeError(f"Timed out stopping i2rt thread {thread.name!r}")
+
+
+def _find_motor_control_threads(
+    motor_chain: Any,
+    threads_before_startup: set[threading.Thread],
+) -> tuple[threading.Thread, ...]:
+    threads = threading.enumerate()
+    owned = [
+        thread
+        for thread in threads
+        if getattr(getattr(thread, "_target", None), "__self__", None) is motor_chain
+    ]
+    if owned:
+        return tuple(owned)
+    return tuple(
+        thread
+        for thread in threads
+        if thread not in threads_before_startup and "_set_torques_and_update_state" in thread.name
+    )
+
+
 def make_i2rt_backend(config: YAMArmConfig) -> ArmBackend:
     config.validate_hardware_startup()
     try:
@@ -103,7 +186,8 @@ def make_i2rt_backend(config: YAMArmConfig) -> ArmBackend:
         else np.asarray(config.gripper_limits_override, dtype=np.float64)
     )
 
-    return get_yam_robot(
+    threads_before_startup = set(threading.enumerate())
+    backend = get_yam_robot(
         channel=config.channel,
         arm_type=arm_type,
         gripper_type=gripper_type,
@@ -111,6 +195,14 @@ def make_i2rt_backend(config: YAMArmConfig) -> ArmBackend:
         gripper_limits_override=gripper_limits_override,
         sim=config.sim,
         enable_auto_recovery=config.enable_auto_recovery,
+    )
+    motor_chain = getattr(backend, "motor_chain", None)
+    if motor_chain is None:
+        return backend
+    return _I2RTHardwareBackend(
+        backend,
+        motor_chain,
+        _find_motor_control_threads(motor_chain, threads_before_startup),
     )
 
 

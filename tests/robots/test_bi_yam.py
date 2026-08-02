@@ -18,6 +18,7 @@ import importlib.util
 import json
 import multiprocessing as mp
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ from lerobot.robots.bi_yam.worker import (
     ArmState,
     ArmWorkerRuntime,
     ProcessArmWorker,
+    _I2RTHardwareBackend,
     make_i2rt_backend,
 )
 from lerobot.robots.utils import make_robot_from_config
@@ -605,6 +607,45 @@ def test_worker_runtime_uses_latest_command_and_stale_watchdog_enters_idle():
     assert backend.idle_calls >= 2
     runtime.close()
     assert backend.close_calls == 1
+
+
+def test_i2rt_hardware_backend_stops_threads_before_closing_can():
+    class FakeMotorChain:
+        def __init__(self) -> None:
+            self.running = True
+
+        def control_loop(self) -> None:
+            while self.running:
+                time.sleep(0.001)
+
+    class FakeI2RTRobot(FakeBackend):
+        def __init__(self, motor_chain: FakeMotorChain, control_thread: threading.Thread) -> None:
+            super().__init__()
+            self.motor_chain = motor_chain
+            self._control_thread = control_thread
+            self._stop_event = threading.Event()
+            self._server_thread = threading.Thread(target=self._server_loop, name="robot_server")
+            self._server_thread.start()
+
+        def _server_loop(self) -> None:
+            self._stop_event.wait()
+
+        def close(self) -> None:
+            assert not self._server_thread.is_alive()
+            assert not self._control_thread.is_alive()
+            super().close()
+
+    motor_chain = FakeMotorChain()
+    control_thread = threading.Thread(target=motor_chain.control_loop, name="motor_control")
+    control_thread.start()
+    backend = FakeI2RTRobot(motor_chain, control_thread)
+    wrapped = _I2RTHardwareBackend(backend, motor_chain, (control_thread,), shutdown_timeout_s=0.5)
+
+    wrapped.close()
+
+    assert backend.close_calls == 1
+    assert not backend._server_thread.is_alive()
+    assert not control_thread.is_alive()
 
 
 def test_process_worker_ipc_applies_command_and_reports_ttl_fault():
