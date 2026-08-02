@@ -122,7 +122,7 @@ Like the original MolmoAct2 YAM launcher, this preset automatically moves to the
 checkpoint's canonical start position before policy control: left arm joints at
 zero with its gripper at `1.0`, then right arm joints at zero with its gripper at
 `0.0`. The reset interpolates absolute waypoints approximately `0.01` apart at
-30 Hz, holds the final target, and verifies every joint is within `0.03` of the
+30 Hz, holds the final target, and verifies every joint is within `0.035` of the
 target. It aborts and idles both arms if the pose is not reached within 30 seconds.
 The episodic strategy repeats this reset before every policy episode. With
 LeRobot's default `--return_to_initial_position=true`, teardown parks at the same

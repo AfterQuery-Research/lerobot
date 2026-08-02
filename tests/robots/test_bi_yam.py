@@ -312,7 +312,7 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.policy_reset_step_size == 0.01
     assert config.policy_reset_max_steps == 100
     assert config.policy_reset_fps == 30
-    assert config.policy_reset_tolerance == 0.03
+    assert config.policy_reset_tolerance == 0.035
     assert config.policy_reset_timeout_s == 30
     assert config.gripper_state_tolerance == 0.15
     assert list(config.cameras) == ["top", "left", "right"]

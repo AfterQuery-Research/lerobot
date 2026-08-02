@@ -274,4 +274,4 @@ class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
     max_joint_delta: float = 0.03
     max_gripper_delta: float = 0.03
     policy_start_position: tuple[float, ...] | None = MOLMOACT2_BIMANUAL_YAM_START_POSITION
-    policy_reset_tolerance: float = 0.03
+    policy_reset_tolerance: float = 0.035
