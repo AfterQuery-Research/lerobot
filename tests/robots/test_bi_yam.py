@@ -312,7 +312,7 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.policy_reset_step_size == 0.01
     assert config.policy_reset_max_steps == 100
     assert config.policy_reset_fps == 30
-    assert config.policy_reset_tolerance == 0.01
+    assert config.policy_reset_tolerance == 0.03
     assert config.policy_reset_timeout_s == 30
     assert config.gripper_state_tolerance == 0.15
     assert list(config.cameras) == ["top", "left", "right"]
@@ -633,6 +633,7 @@ def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_pat
         tmp_path,
         policy_start_position=target,
         policy_reset_fps=10_000,
+        policy_reset_tolerance=0.001,
         policy_reset_timeout_s=0.5,
     )
     robot, workers = make_robot(tmp_path, config=config)
