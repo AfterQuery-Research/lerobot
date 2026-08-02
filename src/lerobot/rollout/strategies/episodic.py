@@ -114,7 +114,10 @@ class EpisodicStrategy(RolloutStrategy):
                     if ctx.runtime.shutdown_event.is_set():
                         break
 
-                    # Reset policy state at episode start (discard leftover hidden state / queue)
+                    # Match hardware-specific policy start poses before every episode,
+                    # then discard leftover policy state and queued actions.
+                    self._engine.pause()
+                    self._reset_robot_for_policy(ctx.hardware)
                     self._engine.reset()
                     self._interpolator.reset()
                     self._engine.resume()
@@ -130,6 +133,7 @@ class EpisodicStrategy(RolloutStrategy):
                         dataset=dataset,
                         single_task=single_task,
                     )
+                    self._engine.pause()
 
                     # Reset phase, skip after the last episode (but run when re-recording)
                     if not events["stop_recording"] and (

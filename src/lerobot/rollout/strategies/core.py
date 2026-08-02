@@ -69,9 +69,20 @@ class RolloutStrategy(abc.ABC):
         if callable(arm):
             logger.info("Arming robot after inference startup checks...")
             arm()
+        self._reset_robot_for_policy(ctx.hardware)
         self._warmup_flushed = False
         self._cached_obs_processed = None
         logger.info("Inference engine started")
+
+    @staticmethod
+    def _reset_robot_for_policy(hw: HardwareContext) -> bool:
+        """Run an optional hardware-specific policy-start reset."""
+        reset_position = hw.robot_wrapper.reset_for_policy()
+        if reset_position is None:
+            return False
+        hw.initial_position = dict(reset_position)
+        logger.info("Captured configured policy start position (%d keys)", len(reset_position))
+        return True
 
     def _process_observation_and_notify(self, processors: ProcessorContext, obs_raw: dict) -> dict:
         """Run the observation processor and notify the engine — throttled to policy ticks.
@@ -161,6 +172,8 @@ class RolloutStrategy(abc.ABC):
         robot = hw.robot_wrapper
         target = hw.initial_position
         try:
+            if robot.reset_for_policy() is not None:
+                return
             current_obs = robot.get_observation()
             current_pos = {k: v for k, v in current_obs.items() if k in target}
             steps = max(int(duration_s * fps), 1)

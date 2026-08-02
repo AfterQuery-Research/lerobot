@@ -141,9 +141,10 @@ class HardwareContext:
     (e.g. for disconnect); strategies should otherwise go through the
     thread-safe wrapper.
 
-    ``initial_position`` stores the robot's joint positions at connect
-    time.  Strategies use it to return the robot to a safe pose before
-    shutting down.
+    ``initial_position`` initially stores the robot's joint positions at
+    connect time. A hardware-specific policy reset may replace it with the
+    configured policy start pose. Strategies use it when returning the robot
+    before shutdown.
     """
 
     robot_wrapper: ThreadSafeRobot

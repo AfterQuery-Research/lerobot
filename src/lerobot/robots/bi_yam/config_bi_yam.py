@@ -30,6 +30,23 @@ YAM_SCALAR_KEYS = (
     "right_gripper.pos",
 )
 
+MOLMOACT2_BIMANUAL_YAM_START_POSITION = (
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+)
+
 
 def _default_joint_limits() -> list[tuple[float, float]]:
     # Operational limits match the YAM model limits without i2rt's hardware-level buffer.
@@ -138,6 +155,14 @@ class BiYAMFollowerConfig(RobotConfig):
     max_joint_delta: float = 0.1
     max_gripper_delta: float = 0.1
 
+    # A configured pose is reached before policy control and between policy episodes.
+    policy_start_position: tuple[float, ...] | None = None
+    policy_reset_step_size: float = 0.01
+    policy_reset_max_steps: int = 100
+    policy_reset_fps: float = 30.0
+    policy_reset_tolerance: float = 0.01
+    policy_reset_timeout_s: float = 30.0
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.calibration_side not in (None, "left", "right"):
@@ -149,16 +174,49 @@ class BiYAMFollowerConfig(RobotConfig):
             "shutdown_timeout_s",
             "max_joint_delta",
             "max_gripper_delta",
+            "policy_reset_step_size",
+            "policy_reset_fps",
+            "policy_reset_tolerance",
+            "policy_reset_timeout_s",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive")
         if not math.isfinite(self.command_lead_time_s) or self.command_lead_time_s < 0:
             raise ValueError("command_lead_time_s must be non-negative")
+        if self.policy_reset_max_steps <= 0:
+            raise ValueError("policy_reset_max_steps must be positive")
 
         _validate_limits("left_joint_limits", self.left_joint_limits, 6)
         _validate_limits("right_joint_limits", self.right_joint_limits, 6)
         _validate_limits("gripper_limits", [self.gripper_limits], 1)
+
+        if self.policy_start_position is not None:
+            if len(self.policy_start_position) != len(YAM_SCALAR_KEYS):
+                raise ValueError(f"policy_start_position must contain {len(YAM_SCALAR_KEYS)} values")
+            try:
+                values = tuple(float(value) for value in self.policy_start_position)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("policy_start_position values must be numeric") from exc
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError("policy_start_position values must be finite")
+
+            limits = [
+                *self.left_joint_limits,
+                self.gripper_limits,
+                *self.right_joint_limits,
+                self.gripper_limits,
+            ]
+            out_of_bounds = [
+                key
+                for key, value, (lower, upper) in zip(YAM_SCALAR_KEYS, values, limits, strict=True)
+                if value < lower or value > upper
+            ]
+            if out_of_bounds:
+                raise ValueError(
+                    "policy_start_position is outside operational limits for " + ", ".join(out_of_bounds)
+                )
+            self.policy_start_position = values
 
 
 def _afterquery_camera(serial_number: str, *, height: int) -> RealSenseCameraConfig:
@@ -202,5 +260,6 @@ class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
     left_arm_config: AfterQueryLeftYAMArmConfig = field(default_factory=AfterQueryLeftYAMArmConfig)
     right_arm_config: AfterQueryRightYAMArmConfig = field(default_factory=AfterQueryRightYAMArmConfig)
     cameras: dict[str, CameraConfig] = field(default_factory=_afterquery_cameras)
-    max_joint_delta: float = 0.003
-    max_gripper_delta: float = 0.003
+    max_joint_delta: float = 0.03
+    max_gripper_delta: float = 0.03
+    policy_start_position: tuple[float, ...] | None = MOLMOACT2_BIMANUAL_YAM_START_POSITION

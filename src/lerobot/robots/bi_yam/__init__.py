@@ -16,6 +16,7 @@
 
 from .bi_yam import AfterQueryDualYAM, BiYAMFollower
 from .config_bi_yam import (
+    MOLMOACT2_BIMANUAL_YAM_START_POSITION,
     YAM_SCALAR_KEYS,
     AfterQueryDualYAMConfig,
     AfterQueryLeftYAMArmConfig,
@@ -35,6 +36,7 @@ __all__ = [
     "BiYAMFollowerConfig",
     "BiYAMSimulatorRobot",
     "BiYAMSimulatorRobotConfig",
+    "MOLMOACT2_BIMANUAL_YAM_START_POSITION",
     "YAMArmConfig",
     "YAMGripperCalibration",
     "YAM_SCALAR_KEYS",

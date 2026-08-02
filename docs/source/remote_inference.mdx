@@ -62,7 +62,7 @@ uv run lerobot-rollout \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=bi_yam_simulator \
     --robot.backend=mujoco \
-    --task="Pick up the object with both arms" \
+    --task="pick up the object" \
     --fps=30 \
     --duration=30 \
     --return_to_initial_position=false
@@ -89,7 +89,7 @@ median state can stand in for live state. Keep the source label accurate:
 ```bash
 uv run lerobot-policy-probe \
     --server_address=<server-ip>:8081 \
-    --task="Pick up the object with both arms" \
+    --task="pick up the object" \
     --state_source=checkpoint-q50-not-live-hardware \
     --state='[-0.07460957,1.45187420,1.27903396,-0.80040099,0.11633919,-0.22562396,0.74105157,0.08125296,1.54637449,1.24736453,-0.68268310,-0.13268824,0.19324336,0.69752937]'
 ```
@@ -109,11 +109,22 @@ arm and keeps both workers idle until server negotiation succeeds.
 The registered `afterquery_dual_yam` robot type provides typed defaults for the
 lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
 verified RealSense serials at 30 FPS (`top` at 640x480; `left` and `right` at
-640x360), conservative per-tick deltas of 0.003 radians for joints and 0.003
-normalized units for grippers, and a one-second command watchdog. The watchdog
+640x360), per-tick deltas of 0.03 radians for joints and 0.03 normalized units
+for grippers, and a one-second command watchdog. The policy deltas admit the
+released checkpoint's small absolute targets while operational joint and
+gripper bounds remain enforced. The watchdog
 allows for normal three-camera scheduling jitter but still puts both workers in
 safe idle if the client command stream stops. Server address, task, and duration
 remain runtime arguments.
+
+Like the original MolmoAct2 YAM launcher, this preset automatically moves to the
+checkpoint's canonical start position before policy control: left arm joints at
+zero with its gripper at `1.0`, then right arm joints at zero with its gripper at
+`0.0`. The reset uses measured state and approximately `0.01`-sized commands at
+30 Hz. It aborts and idles both arms if the pose is not reached within 30 seconds.
+The episodic strategy repeats this reset before every policy episode. With
+LeRobot's default `--return_to_initial_position=true`, teardown parks at the same
+canonical pose.
 
 An i2rt `linear_4310` gripper without raw `[closed, open]` endpoints normally
 performs a moving calibration while the robot is constructed. Normal rollout
@@ -145,11 +156,14 @@ uv run lerobot-rollout \
     --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=afterquery_dual_yam \
-    --task="Pick up the object with both arms" \
+    --task="pick up the object" \
     --fps=30 \
-    --duration=60 \
-    --return_to_initial_position=false
+    --duration=60
 ```
+
+After server negotiation succeeds, this command arms the robot and immediately
+starts the canonical reset trajectory before sending any observation to the
+policy. Clear the workspace and keep the hardware stop ready before launching it.
 
 The generic `bi_yam_follower` type remains available for other installations;
 its channels, cameras, and any explicit gripper overrides can be supplied with

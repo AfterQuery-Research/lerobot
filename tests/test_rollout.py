@@ -355,6 +355,51 @@ def test_thread_safe_robot_properties():
     robot.disconnect()
 
 
+def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
+    from lerobot.rollout import BaseStrategyConfig
+    from lerobot.rollout.context import HardwareContext
+    from lerobot.rollout.robot_wrapper import ThreadSafeRobot
+    from lerobot.rollout.strategies.base import BaseStrategy
+
+    events = []
+    reset_position = {"joint.pos": 0.25}
+
+    class FakeEngine:
+        def reset(self):
+            events.append("engine.reset")
+
+        def start(self):
+            events.append("engine.start")
+
+    class ResettableRobot:
+        def arm(self):
+            events.append("robot.arm")
+
+        def reset_for_policy(self):
+            events.append("robot.reset")
+            return reset_position
+
+    hardware = HardwareContext(
+        robot_wrapper=ThreadSafeRobot(ResettableRobot()),
+        teleop=None,
+        initial_position={"joint.pos": -0.5},
+    )
+    ctx = SimpleNamespace(
+        runtime=SimpleNamespace(cfg=SimpleNamespace(interpolation_multiplier=1)),
+        policy=SimpleNamespace(inference=FakeEngine()),
+        hardware=hardware,
+    )
+    strategy = BaseStrategy(BaseStrategyConfig())
+
+    strategy._init_engine(ctx)
+
+    assert events == ["engine.reset", "engine.start", "robot.arm", "robot.reset"]
+    assert hardware.initial_position == reset_position
+
+    strategy._return_to_initial_position(hardware)
+    assert events[-1] == "robot.reset"
+
+
 # ---------------------------------------------------------------------------
 # Strategy factory
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from lerobot.robots.bi_yam import (
+    MOLMOACT2_BIMANUAL_YAM_START_POSITION,
     YAM_SCALAR_KEYS,
     AfterQueryDualYAM,
     AfterQueryDualYAMConfig,
@@ -118,6 +119,7 @@ class FakeWorker:
         *,
         config: YAMArmConfig,
         fail_start: bool = False,
+        apply_commands: bool = True,
         gripper_limits: tuple[float, float] | None = (0.0, 1.0),
     ) -> None:
         self.side = side
@@ -128,6 +130,7 @@ class FakeWorker:
         self.armed = False
         self.idle = True
         self.fail_start = fail_start
+        self.apply_commands = apply_commands
         self.fail_send = False
         self.fault: str | None = None
         self.state_sequence = 0
@@ -187,7 +190,8 @@ class FakeWorker:
         if self.fail_send:
             raise RuntimeError(f"{self.side} send failed")
         self.commands.append(command)
-        self.positions = np.asarray(command.positions, dtype=np.float64)
+        if self.apply_commands:
+            self.positions = np.asarray(command.positions, dtype=np.float64)
         self.last_applied_sequence = command.sequence
         self.last_applied_positions = command.positions
         self.idle = False
@@ -294,8 +298,14 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert not config.left_arm_config.allow_gripper_calibration
     assert not config.right_arm_config.allow_gripper_calibration
     assert config.calibration_side is None
-    assert config.max_joint_delta == 0.003
-    assert config.max_gripper_delta == 0.003
+    assert config.max_joint_delta == 0.03
+    assert config.max_gripper_delta == 0.03
+    assert config.policy_start_position == MOLMOACT2_BIMANUAL_YAM_START_POSITION
+    assert config.policy_reset_step_size == 0.01
+    assert config.policy_reset_max_steps == 100
+    assert config.policy_reset_fps == 30
+    assert config.policy_reset_tolerance == 0.01
+    assert config.policy_reset_timeout_s == 30
     assert list(config.cameras) == ["top", "left", "right"]
     assert {name: camera.serial_number_or_name for name, camera in config.cameras.items()} == {
         "top": "262422074066",
@@ -586,6 +596,79 @@ def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):
     applied = robot.send_action(dict.fromkeys(YAM_SCALAR_KEYS, 20.0))
 
     assert list(applied.values()) == pytest.approx([1.0] * 6 + [1.0] + [1.0] * 6 + [1.0])
+    robot.disconnect()
+
+
+def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_path):
+    target = MOLMOACT2_BIMANUAL_YAM_START_POSITION
+    config = make_config(
+        tmp_path,
+        policy_start_position=target,
+        policy_reset_fps=10_000,
+        policy_reset_timeout_s=0.5,
+    )
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    initial = np.asarray([*([0.025] * 6), 0.95, *([0.025] * 6), 0.05], dtype=np.float64)
+    workers["left"].positions = initial[:7].copy()
+    workers["right"].positions = initial[7:].copy()
+    robot.arm()
+
+    reset_position = robot.reset_for_policy()
+
+    assert reset_position == dict(zip(YAM_SCALAR_KEYS, target, strict=True))
+    commands = np.asarray(
+        [
+            (*left.positions, *right.positions)
+            for left, right in zip(
+                workers["left"].commands,
+                workers["right"].commands,
+                strict=True,
+            )
+        ]
+    )
+    trajectory = np.vstack([initial, commands])
+    assert np.max(np.abs(np.diff(trajectory, axis=0))) <= 0.0100001
+    assert commands[-1] == pytest.approx(target)
+    assert robot.is_armed
+    robot.disconnect()
+
+
+def test_policy_reset_timeout_disarms_both_workers(tmp_path):
+    target = (0.1, *([0.0] * 13))
+    config = make_config(
+        tmp_path,
+        policy_start_position=target,
+        policy_reset_fps=1_000,
+        policy_reset_timeout_s=0.01,
+    )
+    robot, workers = make_robot(
+        tmp_path,
+        config=config,
+        worker_options={
+            "left": {"apply_commands": False},
+            "right": {"apply_commands": False},
+        },
+    )
+    robot.connect()
+    robot.arm()
+
+    with pytest.raises(TimeoutError, match="did not reach its policy start position"):
+        robot.reset_for_policy()
+
+    assert not robot.is_armed
+    assert all(worker.disarm_calls >= 1 for worker in workers.values())
+    robot.disconnect()
+
+
+def test_policy_reset_is_a_noop_without_configured_pose(tmp_path):
+    robot, workers = make_robot(tmp_path)
+    robot.connect()
+    robot.arm()
+
+    assert robot.reset_for_policy() is None
+    assert workers["left"].commands == []
+    assert workers["right"].commands == []
     robot.disconnect()
 
 

@@ -206,16 +206,7 @@ class BiYAMFollower(Robot):
         if not self._armed:
             raise RuntimeError("BiYAM is in safe idle; arm it locally before sending actions")
 
-        states = self._refresh_states()
-        if not all(state.armed for state in states.values()):
-            self._safe_idle_workers()
-            raise RuntimeError("An arm worker left the armed state")
-        try:
-            self._validate_operational_state(states)
-        except Exception:
-            self._safe_idle_workers()
-            raise
-
+        states = self._refresh_commandable_states()
         try:
             requested = self._validate_action(action)
         except Exception:
@@ -223,7 +214,61 @@ class BiYAMFollower(Robot):
             raise
         present = np.asarray((*states["left"].positions, *states["right"].positions), dtype=np.float64)
         applied = self._apply_safety_limits(requested, present)
+        return self._dispatch_positions(applied)
 
+    def reset_for_policy(self) -> RobotAction | None:
+        """Move to the configured policy start pose before autonomous control."""
+        configured_target = self.config.policy_start_position
+        if configured_target is None:
+            return None
+
+        self._require_rollout_mode()
+        self._require_connected()
+        if not self._armed:
+            raise RuntimeError("BiYAM must be armed before resetting for policy control")
+
+        target = np.asarray(configured_target, dtype=np.float64)
+        target_action = {key: float(value) for key, value in zip(YAM_SCALAR_KEYS, target, strict=True)}
+        started_at = time.monotonic()
+        control_interval_s = 1.0 / self.config.policy_reset_fps
+        logger.info("Moving BiYAM to its configured policy start position")
+
+        try:
+            while True:
+                loop_started_at = time.perf_counter()
+                states = self._refresh_commandable_states()
+                present = np.asarray(
+                    (*states["left"].positions, *states["right"].positions), dtype=np.float64
+                )
+                max_error = float(np.max(np.abs(target - present)))
+                if max_error <= self.config.policy_reset_tolerance:
+                    logger.info("BiYAM reached its policy start position (max error %.4f)", max_error)
+                    return target_action
+                if time.monotonic() - started_at >= self.config.policy_reset_timeout_s:
+                    raise TimeoutError(
+                        "BiYAM did not reach its policy start position within "
+                        f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
+                    )
+
+                # MolmoAct2 uses ~0.01 increments, widening them only when needed
+                # to keep a reset trajectory at no more than 100 steps.
+                step_size = max(
+                    self.config.policy_reset_step_size,
+                    max_error / self.config.policy_reset_max_steps,
+                )
+                applied = self._apply_safety_limits(
+                    target,
+                    present,
+                    max_joint_delta=step_size,
+                    max_gripper_delta=step_size,
+                )
+                self._dispatch_positions(applied)
+                time.sleep(max(0.0, control_interval_s - (time.perf_counter() - loop_started_at)))
+        except (Exception, KeyboardInterrupt):
+            self._safe_idle_workers()
+            raise
+
+    def _dispatch_positions(self, applied: np.ndarray) -> RobotAction:
         self._command_sequence += 1
         command_sequence = self._command_sequence
         execute_at_ns = self._monotonic_ns() + int(self.config.command_lead_time_s * 1e9)
@@ -363,6 +408,18 @@ class BiYAMFollower(Robot):
         if not np.isfinite(positions).all() or np.any(positions < lower) or np.any(positions > upper):
             raise RuntimeError("Cannot arm while measured state is outside operational limits")
 
+    def _refresh_commandable_states(self) -> dict[str, ArmState]:
+        states = self._refresh_states()
+        if not all(state.armed for state in states.values()):
+            self._safe_idle_workers()
+            raise RuntimeError("An arm worker left the armed state")
+        try:
+            self._validate_operational_state(states)
+        except Exception:
+            self._safe_idle_workers()
+            raise
+        return states
+
     def _validate_action(self, action: RobotAction) -> np.ndarray:
         expected = set(YAM_SCALAR_KEYS)
         received = set(action)
@@ -378,15 +435,24 @@ class BiYAMFollower(Robot):
             raise ValueError("Action values must all be finite")
         return values
 
-    def _apply_safety_limits(self, requested: np.ndarray, present: np.ndarray) -> np.ndarray:
+    def _apply_safety_limits(
+        self,
+        requested: np.ndarray,
+        present: np.ndarray,
+        *,
+        max_joint_delta: float | None = None,
+        max_gripper_delta: float | None = None,
+    ) -> np.ndarray:
         lower, upper = self._operational_bounds()
         bounded = np.clip(requested, lower, upper)
+        joint_delta = self.config.max_joint_delta if max_joint_delta is None else max_joint_delta
+        gripper_delta = self.config.max_gripper_delta if max_gripper_delta is None else max_gripper_delta
         delta = np.asarray(
             [
-                *([self.config.max_joint_delta] * 6),
-                self.config.max_gripper_delta,
-                *([self.config.max_joint_delta] * 6),
-                self.config.max_gripper_delta,
+                *([joint_delta] * 6),
+                gripper_delta,
+                *([joint_delta] * 6),
+                gripper_delta,
             ],
             dtype=np.float64,
         )
