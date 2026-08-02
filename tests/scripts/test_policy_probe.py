@@ -26,8 +26,10 @@ from lerobot.scripts import lerobot_policy_probe as probe_module
 
 
 class FakeCamera:
-    def __init__(self, value: int):
+    def __init__(self, value: int, *, height: int, width: int):
         self.value = value
+        self.height = height
+        self.width = width
         self.connected = False
         self.disconnect_count = 0
 
@@ -36,7 +38,7 @@ class FakeCamera:
 
     def async_read(self) -> np.ndarray:
         assert self.connected
-        return np.full((360, 640, 3), self.value, dtype=np.uint8)
+        return np.full((self.height, self.width, 3), self.value, dtype=np.uint8)
 
     def disconnect(self) -> None:
         self.connected = False
@@ -97,7 +99,11 @@ def _config(tmp_path):
 
 def test_probe_captures_once_and_discards_actions(tmp_path):
     FakeClient.instances.clear()
-    cameras = {name: FakeCamera(index) for index, name in enumerate(probe_module.AFTERQUERY_CAMERA_SERIALS)}
+    configs = probe_module._default_cameras()
+    cameras = {
+        name: FakeCamera(index, height=int(config.height), width=int(config.width))
+        for index, (name, config) in enumerate(configs.items())
+    }
 
     result = probe_module.run_policy_probe(
         _config(tmp_path),
@@ -119,6 +125,28 @@ def test_probe_captures_once_and_discards_actions(tmp_path):
     assert report["result"]["actions_discarded"] is True
     assert not any("actions" in path.name for path in result.evidence_dir.iterdir())
     assert all((result.evidence_dir / f"{name}.png").is_file() for name in cameras)
+
+
+def test_probe_camera_defaults_match_afterquery_robot_preset():
+    from lerobot.robots.bi_yam.config_bi_yam import AfterQueryDualYAMConfig
+
+    probe_cameras = probe_module._default_cameras()
+    robot_cameras = AfterQueryDualYAMConfig().cameras
+    assert tuple(probe_cameras) == tuple(robot_cameras)
+    for name in probe_cameras:
+        probe_camera = probe_cameras[name]
+        robot_camera = robot_cameras[name]
+        assert (
+            probe_camera.serial_number_or_name,
+            probe_camera.width,
+            probe_camera.height,
+            probe_camera.fps,
+        ) == (
+            robot_camera.serial_number_or_name,
+            robot_camera.width,
+            robot_camera.height,
+            robot_camera.fps,
+        )
 
 
 def test_probe_refuses_missing_or_unlabelled_state_before_camera_creation(tmp_path):

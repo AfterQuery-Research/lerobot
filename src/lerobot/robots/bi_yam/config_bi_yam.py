@@ -161,11 +161,11 @@ class BiYAMFollowerConfig(RobotConfig):
         _validate_limits("gripper_limits", [self.gripper_limits], 1)
 
 
-def _afterquery_camera(serial_number: str) -> RealSenseCameraConfig:
+def _afterquery_camera(serial_number: str, *, height: int) -> RealSenseCameraConfig:
     return RealSenseCameraConfig(
         serial_number_or_name=serial_number,
         width=640,
-        height=360,
+        height=height,
         fps=30,
         use_rgb=True,
         use_depth=False,
@@ -175,9 +175,9 @@ def _afterquery_camera(serial_number: str) -> RealSenseCameraConfig:
 
 def _afterquery_cameras() -> dict[str, CameraConfig]:
     return {
-        "top": _afterquery_camera("262422074066"),
-        "left": _afterquery_camera("323622270338"),
-        "right": _afterquery_camera("323622270243"),
+        "top": _afterquery_camera("262422074066", height=480),
+        "left": _afterquery_camera("323622270338", height=360),
+        "right": _afterquery_camera("323622270243", height=360),
     }
 
 

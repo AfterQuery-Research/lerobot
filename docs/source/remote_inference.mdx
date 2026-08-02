@@ -108,9 +108,10 @@ arm and keeps both workers idle until server negotiation succeeds.
 
 The registered `afterquery_dual_yam` robot type provides typed defaults for the
 lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
-verified `top`, `left`, and `right` RealSense serials at 640x360 and 30 FPS, and
-conservative per-tick deltas of 0.03 radians for joints and 0.03 normalized units
-for grippers. Server address, task, and duration remain runtime arguments.
+verified RealSense serials at 30 FPS (`top` at 640x480; `left` and `right` at
+640x360), and conservative per-tick deltas of 0.03 radians for joints and 0.03
+normalized units for grippers. Server address, task, and duration remain runtime
+arguments.
 
 An i2rt `linear_4310` gripper without raw `[closed, open]` endpoints normally
 performs a moving calibration while the robot is constructed. Normal rollout

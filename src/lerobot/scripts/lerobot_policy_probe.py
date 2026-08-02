@@ -60,13 +60,19 @@ AFTERQUERY_CAMERA_SERIALS = {
     "right": "323622270243",
 }
 
+AFTERQUERY_CAMERA_HEIGHTS = {
+    "top": 480,
+    "left": 360,
+    "right": 360,
+}
+
 
 def _default_cameras() -> dict[str, RealSenseCameraConfig]:
     return {
         name: RealSenseCameraConfig(
             serial_number_or_name=serial,
             width=640,
-            height=360,
+            height=AFTERQUERY_CAMERA_HEIGHTS[name],
             fps=30,
             color_mode=ColorMode.RGB,
             use_rgb=True,

@@ -299,11 +299,14 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
         "right": "323622270243",
     }
     assert all(camera.type == "intelrealsense" for camera in config.cameras.values())
-    assert all(
-        (camera.width, camera.height, camera.fps, camera.use_rgb, camera.use_depth, camera.warmup_s)
-        == (640, 360, 30, True, False, 2)
-        for camera in config.cameras.values()
-    )
+    assert {
+        name: (camera.width, camera.height, camera.fps, camera.use_rgb, camera.use_depth, camera.warmup_s)
+        for name, camera in config.cameras.items()
+    } == {
+        "top": (640, 480, 30, True, False, 2),
+        "left": (640, 360, 30, True, False, 2),
+        "right": (640, 360, 30, True, False, 2),
+    }
 
     monkeypatch.setattr("lerobot.robots.bi_yam.bi_yam.make_cameras_from_configs", lambda _configs: {})
     robot = make_robot_from_config(config)
