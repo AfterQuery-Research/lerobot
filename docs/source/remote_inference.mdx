@@ -60,24 +60,7 @@ uv run lerobot-policy-server \
 Wait until the model has loaded and the server is listening. For a repeatable
 deployment, also pass `--policy.revision=<commit-sha>`.
 
-## Set client values
-
-On the robot computer, set the values for this installation once per shell:
-
-```bash
-SERVER=<reachable-server-ip>:8081
-ROBOT_ID=<robot-id>
-LEFT_CAN=<left-can-adapter-serial>
-RIGHT_CAN=<right-can-adapter-serial>
-TOP_CAMERA=<top-camera-serial>
-LEFT_CAMERA=<left-camera-serial>
-RIGHT_CAMERA=<right-camera-serial>
-
-CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: '$LEFT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: '$RIGHT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}"
-```
-
-`ROBOT_ID` names this physical robot and selects its local calibration file. Use
-the same value every time on that robot.
+## Discover client hardware
 
 ### Find CAN adapter serials
 
@@ -92,17 +75,6 @@ The serial belongs to the USB-to-CAN adapter, not to an arm. On a new machine,
 connect one adapter at a time, trace its cable to the left or right arm, and
 label the adapter or cable. The serial remains stable if Linux later assigns a
 different `canN` name.
-
-Configure both links after a reboot or replug:
-
-```bash
-uv run lerobot-setup-can \
-    --left_adapter_serial="$LEFT_CAN" \
-    --right_adapter_serial="$RIGHT_CAN"
-```
-
-This performs only `ip link` setup and verification. It does not import i2rt,
-send motor frames, or move the robot.
 
 ### Find camera serials
 
@@ -119,17 +91,44 @@ repository. Each filename contains its camera serial:
 outputs/captured_images/realsense_<serial-number>.png
 ```
 
-Inspect the images to identify the `top`, `left`, and `right` views, then set:
+Inspect the images to identify the `top`, `left`, and `right` views. If a view
+is still ambiguous, connect one camera at a time and rerun the command. Camera
+order is part of the MolmoAct2 contract and must remain `top`, `left`, `right`.
+
+## Set client values
+
+After identifying the hardware, set the values for this installation once per
+shell on the robot computer:
 
 ```bash
+SERVER=<reachable-server-ip>:8081
+ROBOT_ID=<robot-id>
+LEFT_CAN=<left-can-adapter-serial>
+RIGHT_CAN=<right-can-adapter-serial>
 TOP_CAMERA=<top-camera-serial>
 LEFT_CAMERA=<left-camera-serial>
 RIGHT_CAMERA=<right-camera-serial>
+
+CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: '$LEFT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: '$RIGHT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}"
 ```
 
-If a view is still ambiguous, connect one camera at a time and rerun the
-command. Camera order is part of the MolmoAct2 contract and must remain `top`,
-`left`, `right`.
+`SERVER` is the policy-server address reachable from the robot computer.
+`ROBOT_ID` is a stable name chosen for this physical robot; it selects the
+robot's local calibration file. Use the same ID every time on that robot.
+
+### Configure CAN
+
+Configure both links after setting the adapter serials, and again after a reboot
+or replug:
+
+```bash
+uv run lerobot-setup-can \
+    --left_adapter_serial="$LEFT_CAN" \
+    --right_adapter_serial="$RIGHT_CAN"
+```
+
+This performs only `ip link` setup and verification. It does not import i2rt,
+send motor frames, or move the robot.
 
 ## Calibrate once
 
