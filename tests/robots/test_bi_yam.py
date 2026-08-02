@@ -298,14 +298,8 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.right_arm_config.channel == "can_yam_old"
     assert config.left_arm_config.command_ttl_s == 1.0
     assert config.right_arm_config.command_ttl_s == 1.0
-    assert config.left_arm_config.gripper_limits_override == (
-        6.370450904097048,
-        1.223964293888761,
-    )
-    assert config.right_arm_config.gripper_limits_override == (
-        6.396772716868849,
-        1.2010757610437164,
-    )
+    assert config.left_arm_config.gripper_limits_override is None
+    assert config.right_arm_config.gripper_limits_override is None
     assert not config.left_arm_config.allow_gripper_calibration
     assert not config.right_arm_config.allow_gripper_calibration
     assert config.calibration_side is None
@@ -348,7 +342,22 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
 
     assert isinstance(robot, AfterQueryDualYAM)
     assert robot.calibration_fpath == tmp_path / "afterquery_dual_yam.json"
-    assert robot.is_calibrated
+    assert not robot.is_calibrated
+
+
+def test_afterquery_rollout_requires_id_scoped_calibration_before_worker_creation(tmp_path):
+    created_workers = []
+    config = AfterQueryDualYAMConfig(calibration_dir=tmp_path)
+    robot = AfterQueryDualYAM(
+        config,
+        worker_factory=lambda side, arm_config: created_workers.append((side, arm_config)),
+        camera_factory=lambda _configs: {},
+    )
+
+    with pytest.raises(RuntimeError, match=str(tmp_path / "afterquery_dual_yam.json")):
+        robot.connect()
+
+    assert created_workers == []
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
@@ -357,8 +366,8 @@ def test_afterquery_calibration_cli_keeps_nested_hardware_defaults(side):
         CalibrateConfig,
         args=[
             "--robot.type=afterquery_dual_yam",
+            "--robot.id=afterquery_dual_yam",
             f"--robot.calibration_side={side}",
-            f"--robot.{side}_arm_config.gripper_limits_override=null",
             f"--robot.{side}_arm_config.allow_gripper_calibration=true",
         ],
     )

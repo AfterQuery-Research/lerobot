@@ -116,10 +116,11 @@ The registered `afterquery_dual_yam` robot type provides typed defaults for the
 lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
 verified RealSense serials at 30 FPS (`top` at 640x480; `left` and `right` at
 640x360), per-tick deltas of 0.10 radians for joints and 0.03 normalized units
-for grippers, the lab's measured unwrapped raw gripper endpoints, and a
-one-second command watchdog. These per-tick deltas were validated during a
-60-second physical MolmoAct2 rollout at 30 FPS. Operational joint and gripper
-bounds remain enforced. The watchdog
+for grippers, the stable physical-device ID `afterquery_dual_yam`, and a one-second
+command watchdog. Per-device gripper endpoints are loaded from that ID's local
+LeRobot calibration file rather than stored in source. These per-tick deltas were
+validated during a 60-second physical MolmoAct2 rollout at 30 FPS. Operational
+joint and gripper bounds remain enforced. The watchdog
 allows for normal three-camera scheduling jitter but still puts both workers in
 safe idle if the client command stream stops. Server address, task, and duration
 remain runtime arguments.
@@ -155,30 +156,33 @@ instead of attempting another movement during error teardown.
 
 An i2rt `linear_4310` gripper without raw `[closed, open]` endpoints normally
 performs a moving calibration while the robot is constructed. The AfterQuery
-preset includes the measured endpoints, so normal rollout never calibrates while
-connecting. If a gripper is serviced or replaced, recalibrate it separately under
-supervision by explicitly clearing that stored override. Each command below
-intentionally moves only the selected gripper:
+adapter disables that implicit behavior: normal rollout requires both endpoints
+to have been loaded before either hardware worker is created. Calibrate each
+gripper separately under supervision. Each command below intentionally moves only
+the selected gripper:
 
 ```bash
 uv run lerobot-calibrate \
     --robot.type=afterquery_dual_yam \
+    --robot.id=afterquery_dual_yam \
     --robot.calibration_side=left \
-    --robot.left_arm_config.gripper_limits_override=null \
     --robot.left_arm_config.allow_gripper_calibration=true
 
 uv run lerobot-calibrate \
     --robot.type=afterquery_dual_yam \
+    --robot.id=afterquery_dual_yam \
     --robot.calibration_side=right \
-    --robot.right_arm_config.gripper_limits_override=null \
     --robot.right_arm_config.allow_gripper_calibration=true
 ```
 
 The two commands merge their results into the standard LeRobot calibration file
-for robot ID `afterquery_dual_yam`; copy the newly measured pairs back into the
-typed preset before relying on a standalone checkout. Calibration mode starts
-only the selected arm, does not open cameras, and disables policy control. Do not
-set `allow_gripper_calibration` during an autonomous rollout.
+`~/.cache/huggingface/lerobot/calibration/robots/afterquery_dual_yam/afterquery_dual_yam.json`.
+Keep using the same `--robot.id` for calibration and rollout. Calibration mode
+starts only the selected arm, does not open cameras, and disables policy control.
+Do not set `allow_gripper_calibration` during an autonomous rollout. The default
+file is already outside the Git checkout. To keep it inside a particular checkout
+instead, add `--robot.calibration_dir=calibration` to both calibration commands and
+every rollout command; that root directory is gitignored.
 
 ```bash
 uv run lerobot-rollout \
@@ -187,6 +191,7 @@ uv run lerobot-rollout \
     --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=afterquery_dual_yam \
+    --robot.id=afterquery_dual_yam \
     --robot.control_telemetry_path=outputs/yam-control.jsonl \
     --task="pick up the object" \
     --fps=30 \
@@ -213,6 +218,7 @@ uv run lerobot-rollout \
     --inference.server_address=<server-ip>:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
     --robot.type=afterquery_dual_yam \
+    --robot.id=afterquery_dual_yam \
     --robot.control_telemetry_path=outputs/yam-reset-control.jsonl \
     --task="pick up the object" \
     --fps=30 \

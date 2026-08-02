@@ -118,7 +118,12 @@ class BiYAMFollower(Robot):
             try:
                 arm_config.validate_hardware_startup()
             except RuntimeError as exc:
-                raise RuntimeError(f"Unsafe {side} arm configuration: {exc}") from exc
+                raise RuntimeError(
+                    f"Unsafe {side} arm configuration: {exc} No usable {side} calibration was loaded "
+                    f"from {self.calibration_fpath}. Run `lerobot-calibrate --robot.type={self.config.type} "
+                    f"--robot.id={self.id} --robot.calibration_side={side} "
+                    f"--robot.{side}_arm_config.allow_gripper_calibration=true` under supervision."
+                ) from exc
 
         self._workers = {}
         try:
