@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import abc
 import logging
+import math
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import draccus
 
@@ -56,6 +58,19 @@ class BaseStrategyConfig(RolloutStrategyConfig):
     """Autonomous rollout with no data recording."""
 
     pass
+
+
+@RolloutStrategyConfig.register_subclass("action_probe")
+@dataclass
+class ActionProbeStrategyConfig(RolloutStrategyConfig):
+    """Reset hardware, inspect policy actions, and never dispatch them."""
+
+    action_log_path: Path = Path("outputs/policy_action_probe.jsonl")
+    console_log_interval_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.console_log_interval_s) or self.console_log_interval_s < 0:
+            raise ValueError("console_log_interval_s must be non-negative")
 
 
 @RolloutStrategyConfig.register_subclass("sentry")
@@ -289,9 +304,10 @@ class RolloutConfig:
         if needs_dataset and (self.dataset is None or not self.dataset.repo_id):
             raise ValueError(f"{self.strategy.type} strategy requires --dataset.repo_id to be set")
 
-        if isinstance(self.strategy, BaseStrategyConfig) and self.dataset is not None:
+        if isinstance(self.strategy, (BaseStrategyConfig, ActionProbeStrategyConfig)) and self.dataset is not None:
             raise ValueError(
-                "Base strategy does not record data. Use sentry, highlight, or dagger for recording."
+                f"{self.strategy.type} strategy does not record datasets. "
+                "Use sentry, highlight, dagger, or episodic for recording."
             )
 
         # Sentry MUST use streaming encoding to avoid disk I/O blocking the control loop

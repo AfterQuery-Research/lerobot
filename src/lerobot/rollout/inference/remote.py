@@ -251,13 +251,15 @@ class RemoteInferenceEngine(InferenceEngine):
         del obs_frame
         with self._lock:
             action = self._action_queue.popleft() if self._action_queue else None
-            if action is not None:
-                self._last_executed_tick = self._current_tick
-                self._current_tick += 1
             should_request = len(self._action_queue) <= self._settings.prefetch_threshold
         if should_request:
             self._observation_ready.set()
         return action
+
+    def notify_action_sent(self) -> None:
+        with self._lock:
+            self._last_executed_tick = self._current_tick
+            self._current_tick += 1
 
     def _make_policy_observation(
         self,

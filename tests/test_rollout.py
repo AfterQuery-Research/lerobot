@@ -59,6 +59,7 @@ def test_strategies_submodule_imports():
 
 def test_strategy_config_types():
     from lerobot.rollout import (
+        ActionProbeStrategyConfig,
         BaseStrategyConfig,
         DAggerStrategyConfig,
         EpisodicStrategyConfig,
@@ -66,6 +67,7 @@ def test_strategy_config_types():
         SentryStrategyConfig,
     )
 
+    assert ActionProbeStrategyConfig().type == "action_probe"
     assert BaseStrategyConfig().type == "base"
     assert SentryStrategyConfig().type == "sentry"
     assert HighlightStrategyConfig().type == "highlight"
@@ -407,6 +409,8 @@ def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
 
 def test_create_strategy_dispatches():
     from lerobot.rollout import (
+        ActionProbeStrategy,
+        ActionProbeStrategyConfig,
         BaseStrategy,
         BaseStrategyConfig,
         DAggerStrategy,
@@ -418,6 +422,7 @@ def test_create_strategy_dispatches():
         create_strategy,
     )
 
+    assert isinstance(create_strategy(ActionProbeStrategyConfig()), ActionProbeStrategy)
     assert isinstance(create_strategy(BaseStrategyConfig()), BaseStrategy)
     assert isinstance(create_strategy(SentryStrategyConfig()), SentryStrategy)
     assert isinstance(create_strategy(DAggerStrategyConfig()), DAggerStrategy)

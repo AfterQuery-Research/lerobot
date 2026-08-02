@@ -198,6 +198,29 @@ clipped by operational bounds or per-tick deltas. Empty action-queue iterations
 do not advance the execution tick, so inference latency does not discard the
 beginning of the first action chunk before the robot has moved.
 
+To test the same reset, live state, cameras, and remote policy without executing
+policy actions, use the rollout action-probe strategy:
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=action_probe \
+    --strategy.action_log_path=outputs/yam-policy-actions.jsonl \
+    --inference.type=remote \
+    --inference.server_address=<server-ip>:8081 \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --robot.type=afterquery_dual_yam \
+    --robot.control_telemetry_path=outputs/yam-reset-control.jsonl \
+    --task="pick up the object" \
+    --fps=30 \
+    --duration=10
+```
+
+The configured reset is the only commanded motion. Once it succeeds, the
+strategy disarms both workers before observations are submitted. Every returned
+action is written with `executed: false`; the action processor still runs, but
+`robot.send_action` is never called. Teardown does not command another return
+trajectory.
+
 The generic `bi_yam_follower` type remains available for other installations;
 its channels, cameras, and any explicit gripper overrides can be supplied with
 normal dataclass-backed CLI arguments.

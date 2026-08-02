@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import sys
 import threading
@@ -194,6 +195,9 @@ def test_empty_queue_does_not_advance_execution_tick_or_discard_first_chunk():
         _wait_for(lambda: engine.action_queue_depth == 4)
         assert np.allclose(engine.get_action(None).numpy(), [0.25, 0.75])
         assert engine.action_queue_depth == 3
+        assert engine._current_tick == 0
+        engine.notify_action_sent()
+        assert engine._current_tick == 1
     finally:
         backend.release.set()
         engine.stop()
@@ -277,6 +281,75 @@ def test_full_rollout_controls_shared_world_simulator_over_grpc(monkeypatch, tmp
     finally:
         strategy.teardown(ctx)
         server.stop(grace=0).wait()
+    assert not ctx.hardware.robot_wrapper.is_connected
+
+
+def test_action_probe_rollout_discards_actions_after_disarming(monkeypatch, tmp_path):
+    from lerobot.robots.bi_yam import YAM_SCALAR_KEYS, BiYAMSimulatorRobotConfig
+    from lerobot.rollout import (
+        ActionProbeStrategyConfig,
+        RemoteInferenceConfig,
+        RolloutConfig,
+        build_rollout_context,
+        create_strategy,
+    )
+    from lerobot.simulators.bi_yam import CAMERA_NAMES, BiYAMSimulatorConfig
+
+    port = _free_port()
+    backend = CountingBackend(
+        state_features=YAM_SCALAR_KEYS,
+        camera_keys=CAMERA_NAMES,
+        action_horizon=30,
+    )
+    server, _ = create_grpc_server(RemotePolicyServerConfig(port=port), backend)
+    server.start()
+    action_log_path = tmp_path / "actions.jsonl"
+    monkeypatch.setattr(sys, "argv", ["lerobot-rollout", "--inference.type=remote"])
+    cfg = RolloutConfig(
+        robot=BiYAMSimulatorRobotConfig(
+            calibration_dir=tmp_path,
+            backend="fallback",
+            simulator=BiYAMSimulatorConfig(
+                physics_hz=300,
+                control_hz=100,
+                observation_hz=20,
+                camera_height=12,
+                camera_width=16,
+            ),
+        ),
+        strategy=ActionProbeStrategyConfig(action_log_path=action_log_path),
+        inference=RemoteInferenceConfig(
+            server_address=f"127.0.0.1:{port}",
+            image_encoding="png",
+            inference_timeout_s=1.0,
+            prefetch_threshold=20,
+        ),
+        fps=20.0,
+        duration=0.35,
+        task="move the blocks",
+    )
+    shutdown_event = threading.Event()
+    ctx = build_rollout_context(cfg, shutdown_event)
+    strategy = create_strategy(cfg.strategy)
+    robot = ctx.hardware.robot_wrapper.inner
+    try:
+        strategy.setup(ctx)
+        assert not robot.is_armed
+
+        def reject_action(_action):
+            raise AssertionError("action probe attempted to execute a policy action")
+
+        monkeypatch.setattr(robot, "send_action", reject_action)
+        strategy.run(ctx)
+        assert backend.inference_count > 0
+    finally:
+        strategy.teardown(ctx)
+        server.stop(grace=0).wait()
+
+    records = [json.loads(line) for line in action_log_path.read_text().splitlines()]
+    assert records
+    assert all(record["executed"] is False for record in records)
+    assert all(tuple(record["action"]) == YAM_SCALAR_KEYS for record in records)
     assert not ctx.hardware.robot_wrapper.is_connected
 
 

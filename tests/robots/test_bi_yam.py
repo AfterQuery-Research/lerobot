@@ -653,8 +653,10 @@ def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):
 
 def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_path):
     target = AFTERQUERY_BIMANUAL_YAM_START_POSITION
+    telemetry_path = tmp_path / "reset-control.jsonl"
     config = make_config(
         tmp_path,
+        control_telemetry_path=telemetry_path,
         policy_start_position=target,
         policy_reset_fps=10_000,
         policy_reset_tolerance=0.001,
@@ -685,6 +687,11 @@ def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_pat
     assert commands[-1] == pytest.approx(target)
     assert robot.is_armed
     robot.disconnect()
+
+    records = [json.loads(line) for line in telemetry_path.read_text().splitlines()]
+    assert len(records) == len(commands)
+    assert {record["phase"] for record in records} <= {"reset", "reset_hold"}
+    assert records[-1]["applied"] == pytest.approx(target)
 
 
 def test_policy_reset_timeout_disarms_both_workers(tmp_path):

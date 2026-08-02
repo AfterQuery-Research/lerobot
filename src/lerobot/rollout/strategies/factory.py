@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .action_probe import ActionProbeStrategy
 from .base import BaseStrategy
 from .core import RolloutStrategy
 from .dagger import DAggerStrategy
@@ -37,6 +38,8 @@ def create_strategy(config: RolloutStrategyConfig) -> RolloutStrategy:
     """
     if config.type == "base":
         return BaseStrategy(config)
+    if config.type == "action_probe":
+        return ActionProbeStrategy(config)
     if config.type == "sentry":
         return SentryStrategy(config)
     if config.type == "highlight":
@@ -46,5 +49,6 @@ def create_strategy(config: RolloutStrategyConfig) -> RolloutStrategy:
     if config.type == "episodic":
         return EpisodicStrategy(config)
     raise ValueError(
-        f"Unknown strategy type '{config.type}'. Available: base, sentry, highlight, dagger, episodic"
+        f"Unknown strategy type '{config.type}'. "
+        "Available: base, action_probe, sentry, highlight, dagger, episodic"
     )

@@ -303,16 +303,19 @@ def send_next_action(
     obs_raw: dict,
     ctx: RolloutContext,
     interpolator: ActionInterpolator,
+    *,
+    execute: bool = True,
 ) -> dict | None:
     """Dispatch the next action to the robot.
 
     Pulls the next action tensor from the inference engine, feeds the
     interpolator, and sends the interpolated action through the
-    ``robot_action_processor`` to the robot.  Works identically for
-    sync and async backends — the rollout strategy never needs to branch.
+    ``robot_action_processor`` to the robot when ``execute`` is true.
+    Works identically for sync and async backends — the rollout strategy
+    never needs to branch.
 
-    Returns the action dict that was sent, or ``None`` if no action was
-    ready (e.g. empty async queue, interpolator not yet primed).
+    Returns the action dict that was produced, or ``None`` if no action
+    was ready (e.g. empty async queue, interpolator not yet primed).
     """
     engine = ctx.policy.inference
     features = ctx.data.dataset_features
@@ -332,5 +335,7 @@ def send_next_action(
         raise ValueError(f"Interpolated tensor length ({len(interp)}) != action keys ({len(ordered_keys)})")
     action_dict = {k: interp[i].item() for i, k in enumerate(ordered_keys)}
     processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
-    ctx.hardware.robot_wrapper.send_action(processed)
+    if execute:
+        ctx.hardware.robot_wrapper.send_action(processed)
+        engine.notify_action_sent()
     return action_dict

@@ -223,6 +223,7 @@ class BiYAMFollower(Robot):
         applied_action = self._dispatch_positions(applied)
         measured = self._control_positions(self._states)
         self._record_control_telemetry(
+            phase="policy",
             requested=requested,
             bounded=bounded,
             applied=applied,
@@ -272,6 +273,15 @@ class BiYAMFollower(Robot):
                         f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
                     )
                 self._dispatch_positions(waypoint)
+                measured = self._control_positions(self._states)
+                self._record_control_telemetry(
+                    phase="reset",
+                    requested=waypoint,
+                    bounded=waypoint,
+                    applied=waypoint,
+                    measured_before=present,
+                    measured_after=measured,
+                )
                 time.sleep(max(0.0, control_interval_s - (time.perf_counter() - loop_started_at)))
 
             # Keep the final absolute target active until measured state settles.
@@ -289,6 +299,15 @@ class BiYAMFollower(Robot):
                         f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
                     )
                 self._dispatch_positions(target)
+                measured = self._control_positions(self._states)
+                self._record_control_telemetry(
+                    phase="reset_hold",
+                    requested=target,
+                    bounded=target,
+                    applied=target,
+                    measured_before=present,
+                    measured_after=measured,
+                )
                 time.sleep(max(0.0, control_interval_s - (time.perf_counter() - loop_started_at)))
         except (Exception, KeyboardInterrupt):
             self._safe_idle_workers()
@@ -347,6 +366,7 @@ class BiYAMFollower(Robot):
     def _record_control_telemetry(
         self,
         *,
+        phase: str,
         requested: np.ndarray,
         bounded: np.ndarray,
         applied: np.ndarray,
@@ -368,6 +388,7 @@ class BiYAMFollower(Robot):
         timestamp_ns = self._monotonic_ns()
         record = {
             "sequence": self._command_sequence,
+            "phase": phase,
             "monotonic_ns": timestamp_ns,
             "names": list(YAM_SCALAR_KEYS),
             "requested": requested.tolist(),
@@ -390,7 +411,9 @@ class BiYAMFollower(Robot):
         interval_ns = int(self.config.control_telemetry_console_interval_s * 1e9)
         if interval_ns == 0 or timestamp_ns - self._last_control_summary_ns >= interval_ns:
             logger.info(
-                "YAM control seq=%d max_applied_tracking_error=%.4f bound_clipped=%s delta_clipped=%s",
+                "YAM control phase=%s seq=%d max_applied_tracking_error=%.4f "
+                "bound_clipped=%s delta_clipped=%s",
+                phase,
                 self._command_sequence,
                 float(np.max(np.abs(applied_error))),
                 bound_clipped,
