@@ -15,16 +15,25 @@
 # limitations under the License.
 
 import importlib.util
+import json
 import multiprocessing as mp
 import sys
 import time
 import types
 from types import SimpleNamespace
 
+import draccus
 import numpy as np
 import pytest
 
-from lerobot.robots.bi_yam import YAM_SCALAR_KEYS, BiYAMFollower, BiYAMFollowerConfig, YAMArmConfig
+from lerobot.robots.bi_yam import (
+    YAM_SCALAR_KEYS,
+    AfterQueryDualYAM,
+    AfterQueryDualYAMConfig,
+    BiYAMFollower,
+    BiYAMFollowerConfig,
+    YAMArmConfig,
+)
 from lerobot.robots.bi_yam.worker import (
     ArmCommand,
     ArmControl,
@@ -34,11 +43,13 @@ from lerobot.robots.bi_yam.worker import (
     make_i2rt_backend,
 )
 from lerobot.robots.utils import make_robot_from_config
+from lerobot.scripts.lerobot_calibrate import CalibrateConfig
 
 
 class FakeBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, gripper_limits: tuple[float, float] | None = (0.0, 1.0)) -> None:
         self.positions = np.zeros(7, dtype=np.float64)
+        self.gripper_limits = gripper_limits
         self.commands: list[np.ndarray] = []
         self.idle_calls = 0
         self.close_calls = 0
@@ -48,6 +59,9 @@ class FakeBackend:
 
     def get_joint_pos(self) -> np.ndarray:
         return self.positions.copy()
+
+    def get_robot_info(self) -> dict:
+        return {"gripper_limits": self.gripper_limits}
 
     def command_joint_pos(self, joint_pos: np.ndarray) -> None:
         self.positions = np.asarray(joint_pos, dtype=np.float64).copy()
@@ -96,8 +110,17 @@ def make_slow_backend(_config: YAMArmConfig) -> FakeBackend:
 
 
 class FakeWorker:
-    def __init__(self, side: str, *, fail_start: bool = False) -> None:
+    def __init__(
+        self,
+        side: str,
+        *,
+        config: YAMArmConfig,
+        fail_start: bool = False,
+        gripper_limits: tuple[float, float] | None = (0.0, 1.0),
+    ) -> None:
         self.side = side
+        self.config = config
+        self.gripper_limits = gripper_limits
         self.positions = np.zeros(7, dtype=np.float64)
         self.is_alive = False
         self.armed = False
@@ -125,6 +148,7 @@ class FakeWorker:
             control_sequence=self.control_sequence,
             last_applied_command_sequence=self.last_applied_sequence,
             last_applied_positions=self.last_applied_positions,
+            gripper_limits=self.gripper_limits,
             fault=self.fault,
         )
 
@@ -221,7 +245,7 @@ def make_robot(tmp_path, *, config=None, cameras=None, worker_options=None):
     worker_options = worker_options or {}
 
     def worker_factory(side, _config):
-        worker = FakeWorker(side, **worker_options.get(side, {}))
+        worker = FakeWorker(side, config=_config, **worker_options.get(side, {}))
         workers[side] = worker
         return worker
 
@@ -256,6 +280,57 @@ def test_standard_robot_factory_discovers_bi_yam_without_i2rt(tmp_path):
     assert not robot.is_connected
 
 
+def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_path, monkeypatch):
+    config = AfterQueryDualYAMConfig(calibration_dir=tmp_path)
+
+    assert config.type == "afterquery_dual_yam"
+    assert config.id == "afterquery_dual_yam"
+    assert config.left_arm_config.channel == "can_yam_new"
+    assert config.right_arm_config.channel == "can_yam_old"
+    assert not config.left_arm_config.allow_gripper_calibration
+    assert not config.right_arm_config.allow_gripper_calibration
+    assert config.calibration_side is None
+    assert config.max_joint_delta == 0.03
+    assert config.max_gripper_delta == 0.03
+    assert list(config.cameras) == ["top", "left", "right"]
+    assert {name: camera.serial_number_or_name for name, camera in config.cameras.items()} == {
+        "top": "262422074066",
+        "left": "323622270338",
+        "right": "323622270243",
+    }
+    assert all(camera.type == "intelrealsense" for camera in config.cameras.values())
+    assert all(
+        (camera.width, camera.height, camera.fps, camera.use_rgb, camera.use_depth, camera.warmup_s)
+        == (640, 360, 30, True, False, 2)
+        for camera in config.cameras.values()
+    )
+
+    monkeypatch.setattr("lerobot.robots.bi_yam.bi_yam.make_cameras_from_configs", lambda _configs: {})
+    robot = make_robot_from_config(config)
+
+    assert isinstance(robot, AfterQueryDualYAM)
+    assert robot.calibration_fpath == tmp_path / "afterquery_dual_yam.json"
+    assert not robot.is_calibrated
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_afterquery_calibration_cli_keeps_nested_hardware_defaults(side):
+    config = draccus.parse(
+        CalibrateConfig,
+        args=[
+            "--robot.type=afterquery_dual_yam",
+            f"--robot.calibration_side={side}",
+            f"--robot.{side}_arm_config.allow_gripper_calibration=true",
+        ],
+    )
+
+    assert isinstance(config.robot, AfterQueryDualYAMConfig)
+    assert config.robot.left_arm_config.channel == "can_yam_new"
+    assert config.robot.right_arm_config.channel == "can_yam_old"
+    assert config.robot.calibration_side == side
+    assert getattr(config.robot, f"{side}_arm_config").allow_gripper_calibration
+
+
 def test_calibration_status_reflects_fixed_gripper_limits(tmp_path):
     uncalibrated = make_config(
         tmp_path,
@@ -270,6 +345,141 @@ def test_calibration_status_reflects_fixed_gripper_limits(tmp_path):
 
     assert not make_robot(tmp_path, config=uncalibrated)[0].is_calibrated
     assert make_robot(tmp_path, config=calibrated)[0].is_calibrated
+
+
+def test_single_arm_calibration_persists_and_reloads_both_gripper_limits(tmp_path):
+    camera = FakeCamera(3, 4)
+    camera_config = SimpleNamespace(fps=30, width=4, height=3, use_rgb=True, use_depth=False)
+    left_config = make_config(
+        tmp_path,
+        id="lab_yam",
+        calibration_side="left",
+        left_arm_config=YAMArmConfig(channel="can_left", allow_gripper_calibration=True),
+        right_arm_config=YAMArmConfig(channel="can_right"),
+        cameras={"top": camera_config},
+    )
+    left_robot, left_workers = make_robot(
+        tmp_path,
+        config=left_config,
+        cameras={"top": camera},
+        worker_options={"left": {"gripper_limits": (1.25, -0.5)}},
+    )
+
+    left_robot.connect(calibrate=False)
+    assert set(left_workers) == {"left"}
+    assert not camera.is_connected
+    with pytest.raises(RuntimeError, match="Policy control is disabled"):
+        left_robot.arm()
+    left_robot.calibrate()
+    left_robot.disconnect()
+
+    calibration_path = tmp_path / "lab_yam.json"
+    assert json.loads(calibration_path.read_text()) == {
+        "left": {"gripper_limits": [1.25, -0.5]},
+    }
+
+    right_config = make_config(
+        tmp_path,
+        id="lab_yam",
+        calibration_side="right",
+        left_arm_config=YAMArmConfig(channel="can_left"),
+        right_arm_config=YAMArmConfig(channel="can_right", allow_gripper_calibration=True),
+    )
+    right_robot, right_workers = make_robot(
+        tmp_path,
+        config=right_config,
+        worker_options={"right": {"gripper_limits": (-1.0, 0.75)}},
+    )
+
+    right_robot.connect(calibrate=False)
+    assert set(right_workers) == {"right"}
+    right_robot.calibrate()
+    right_robot.disconnect()
+
+    assert json.loads(calibration_path.read_text()) == {
+        "left": {"gripper_limits": [1.25, -0.5]},
+        "right": {"gripper_limits": [-1.0, 0.75]},
+    }
+
+    rollout_config = make_config(
+        tmp_path,
+        id="lab_yam",
+        left_arm_config=YAMArmConfig(channel="can_left"),
+        right_arm_config=YAMArmConfig(channel="can_right"),
+    )
+    rollout_robot, rollout_workers = make_robot(tmp_path, config=rollout_config)
+
+    assert rollout_robot.is_calibrated
+    rollout_robot.connect()
+    assert rollout_workers["left"].config.gripper_limits_override == (1.25, -0.5)
+    assert rollout_workers["right"].config.gripper_limits_override == (-1.0, 0.75)
+    assert not rollout_workers["left"].config.allow_gripper_calibration
+    assert not rollout_workers["right"].config.allow_gripper_calibration
+    rollout_robot.disconnect()
+
+
+def test_explicit_gripper_limits_override_persisted_calibration(tmp_path):
+    calibration_path = tmp_path / "lab_yam.json"
+    calibration_path.write_text(
+        json.dumps(
+            {
+                "left": {"gripper_limits": [1.25, -0.5]},
+                "right": {"gripper_limits": [-1.0, 0.75]},
+            }
+        )
+    )
+    config = make_config(
+        tmp_path,
+        id="lab_yam",
+        left_arm_config=YAMArmConfig(channel="can_left", gripper_limits_override=(2.0, -2.0)),
+        right_arm_config=YAMArmConfig(channel="can_right"),
+    )
+    robot, workers = make_robot(tmp_path, config=config)
+
+    robot.connect()
+
+    assert workers["left"].config.gripper_limits_override == (2.0, -2.0)
+    assert workers["right"].config.gripper_limits_override == (-1.0, 0.75)
+    robot.disconnect()
+
+
+def test_calibration_mode_requires_selected_arm_opt_in_before_worker_creation(tmp_path):
+    created_workers = []
+    config = make_config(
+        tmp_path,
+        calibration_side="left",
+        left_arm_config=YAMArmConfig(channel="can_left"),
+        right_arm_config=YAMArmConfig(channel="can_right"),
+    )
+    robot = BiYAMFollower(
+        config,
+        worker_factory=lambda side, arm_config: created_workers.append((side, arm_config)),
+        camera_factory=lambda _configs: {},
+    )
+
+    with pytest.raises(RuntimeError, match="allow_gripper_calibration=true"):
+        robot.connect(calibrate=False)
+
+    assert created_workers == []
+
+
+def test_normal_rollout_rejects_moving_calibration_opt_in_without_calibration_side(tmp_path):
+    created_workers = []
+    config = make_config(
+        tmp_path,
+        left_arm_config=YAMArmConfig(channel="can_left", allow_gripper_calibration=True),
+        right_arm_config=YAMArmConfig(channel="can_right", gripper_limits_override=(1.0, 0.0)),
+    )
+    robot = BiYAMFollower(
+        config,
+        worker_factory=lambda side, arm_config: created_workers.append((side, arm_config)),
+        camera_factory=lambda _configs: {},
+    )
+
+    with pytest.raises(RuntimeError, match="only allowed through single-arm calibration mode"):
+        robot.connect()
+
+    assert created_workers == []
 
 
 def test_connect_preflights_both_arms_before_creating_workers_or_connecting_cameras(tmp_path):
@@ -385,6 +595,7 @@ def test_worker_runtime_uses_latest_command_and_stale_watchdog_enters_idle():
     assert len(backend.commands) == 1
     assert backend.commands[0] == pytest.approx(np.full(7, 0.2))
     assert applied.last_applied_command_sequence == 2
+    assert applied.gripper_limits == (0.0, 1.0)
     assert stale.fault == "command_ttl_expired"
     assert not stale.armed
     assert stale.idle

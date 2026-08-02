@@ -18,8 +18,11 @@ import logging
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
+import draccus
 import numpy as np
 
 from lerobot.cameras import Camera, make_cameras_from_configs
@@ -27,7 +30,13 @@ from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 from ..robot import Robot
-from .config_bi_yam import YAM_SCALAR_KEYS, BiYAMFollowerConfig, YAMArmConfig
+from .config_bi_yam import (
+    YAM_SCALAR_KEYS,
+    AfterQueryDualYAMConfig,
+    BiYAMFollowerConfig,
+    YAMArmConfig,
+    YAMGripperCalibration,
+)
 from .worker import ArmCommand, ArmState, ArmWorker, ProcessArmWorker
 
 logger = logging.getLogger(__name__)
@@ -50,8 +59,10 @@ class BiYAMFollower(Robot):
         camera_factory: CameraFactory | None = None,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ):
+        self._yam_calibration: dict[str, YAMGripperCalibration] = {}
         super().__init__(config)
         self.config = config
+        self._arm_configs = self._resolve_arm_configs()
         self._worker_factory = worker_factory or (lambda side, cfg: ProcessArmWorker(side, cfg))
         self._monotonic_ns = monotonic_ns
         self.cameras = (camera_factory or make_cameras_from_configs)(config.cameras)
@@ -81,10 +92,7 @@ class BiYAMFollower(Robot):
 
     @property
     def is_calibrated(self) -> bool:
-        return all(
-            arm_config.has_fixed_gripper_calibration
-            for arm_config in (self.config.left_arm_config, self.config.right_arm_config)
-        )
+        return all(arm_config.has_fixed_gripper_calibration for arm_config in self._arm_configs.values())
 
     @property
     def is_armed(self) -> bool:
@@ -102,10 +110,7 @@ class BiYAMFollower(Robot):
         if self._connected:
             raise DeviceAlreadyConnectedError(f"{self.__class__.__name__} is already connected.")
 
-        arm_configs = {
-            "left": self.config.left_arm_config,
-            "right": self.config.right_arm_config,
-        }
+        arm_configs = self._startup_arm_configs()
         for side, arm_config in arm_configs.items():
             try:
                 arm_config.validate_hardware_startup()
@@ -118,8 +123,9 @@ class BiYAMFollower(Robot):
                 self._workers[side] = self._worker_factory(side, arm_config)
             for side, worker in self._workers.items():
                 self._states[side] = worker.start(self.config.startup_timeout_s)
-            for camera in self.cameras.values():
-                camera.connect()
+            if self.config.calibration_side is None:
+                for camera in self.cameras.values():
+                    camera.connect()
         except Exception:
             self._cleanup_resources(list(self.cameras.values()))
             self._workers.clear()
@@ -131,13 +137,33 @@ class BiYAMFollower(Robot):
         logger.info("%s connected in safe idle", self)
 
     def calibrate(self) -> None:
-        return
+        self._require_connected()
+        side = self.config.calibration_side
+        if side is None:
+            raise RuntimeError(
+                "Set calibration_side to left or right and calibrate one YAM gripper at a time"
+            )
+        state = self._states.get(side)
+        if state is None or state.gripper_limits is None:
+            raise RuntimeError(f"{side} arm did not report calibrated gripper limits")
+
+        calibration = YAMGripperCalibration(gripper_limits=state.gripper_limits)
+        self._yam_calibration[side] = calibration
+        self._save_calibration()
+        original = self.config.left_arm_config if side == "left" else self.config.right_arm_config
+        self._arm_configs[side] = replace(
+            original,
+            gripper_limits_override=calibration.gripper_limits,
+            allow_gripper_calibration=False,
+        )
+        logger.info("Saved %s YAM gripper calibration to %s", side, self.calibration_fpath)
 
     def configure(self) -> None:
         return
 
     def arm(self) -> None:
         """Locally enable command acceptance; policy action dictionaries cannot arm the robot."""
+        self._require_rollout_mode()
         self._require_connected()
         states = self._refresh_states(allow_fault=True)
         self._validate_operational_state(states)
@@ -154,6 +180,7 @@ class BiYAMFollower(Robot):
         self._safe_idle_workers()
 
     def get_observation(self) -> RobotObservation:
+        self._require_rollout_mode()
         self._require_connected()
         states = self._refresh_states()
         observation: RobotObservation = {}
@@ -174,6 +201,7 @@ class BiYAMFollower(Robot):
         return observation
 
     def send_action(self, action: RobotAction) -> RobotAction:
+        self._require_rollout_mode()
         self._require_connected()
         if not self._armed:
             raise RuntimeError("BiYAM is in safe idle; arm it locally before sending actions")
@@ -235,13 +263,73 @@ class BiYAMFollower(Robot):
                 f"{self.__class__.__name__} is not connected. Run `.connect()` first."
             )
 
+    def _require_rollout_mode(self) -> None:
+        if self.config.calibration_side is not None:
+            raise RuntimeError("Policy control is disabled while calibrating a YAM gripper")
+
+    def _resolve_arm_configs(self) -> dict[str, YAMArmConfig]:
+        resolved = {
+            "left": self.config.left_arm_config,
+            "right": self.config.right_arm_config,
+        }
+        for side, calibration in self._yam_calibration.items():
+            arm_config = resolved[side]
+            recalibrating = self.config.calibration_side == side and arm_config.allow_gripper_calibration
+            if arm_config.gripper_limits_override is None and not recalibrating:
+                resolved[side] = replace(
+                    arm_config,
+                    gripper_limits_override=calibration.gripper_limits,
+                )
+        return resolved
+
+    def _startup_arm_configs(self) -> dict[str, YAMArmConfig]:
+        calibration_side = self.config.calibration_side
+        if calibration_side is None:
+            moving_sides = [
+                side
+                for side, arm_config in self._arm_configs.items()
+                if arm_config.allow_gripper_calibration and not arm_config.has_fixed_gripper_calibration
+            ]
+            if moving_sides:
+                raise RuntimeError(
+                    "Moving gripper calibration is only allowed through single-arm calibration mode; "
+                    f"set calibration_side for {moving_sides[0]}"
+                )
+            return dict(self._arm_configs)
+
+        arm_config = self._arm_configs[calibration_side]
+        if not arm_config.allow_gripper_calibration:
+            raise RuntimeError(
+                f"Calibrating {calibration_side} requires "
+                f"{calibration_side}_arm_config.allow_gripper_calibration=true"
+            )
+        return {calibration_side: arm_config}
+
+    def _load_calibration(self, fpath: Path | None = None) -> None:
+        fpath = self.calibration_fpath if fpath is None else fpath
+        with open(fpath) as calibration_file, draccus.config_type("json"):
+            calibration = draccus.load(dict[str, YAMGripperCalibration], calibration_file)
+        unknown_sides = set(calibration) - {"left", "right"}
+        if unknown_sides:
+            raise ValueError(f"Unknown YAM calibration sides: {sorted(unknown_sides)}")
+        self._yam_calibration = calibration
+
+    def _save_calibration(self, fpath: Path | None = None) -> None:
+        fpath = self.calibration_fpath if fpath is None else fpath
+        with open(fpath, "w") as calibration_file, draccus.config_type("json"):
+            draccus.dump(self._yam_calibration, calibration_file, indent=4)
+
     def _require_connected(self) -> None:
         if not self._connected:
             raise DeviceNotConnectedError(
                 f"{self.__class__.__name__} is not connected. Run `.connect()` first."
             )
         dead_sides = [side for side, worker in self._workers.items() if not worker.is_alive]
-        disconnected_cameras = [name for name, camera in self.cameras.items() if not camera.is_connected]
+        disconnected_cameras = (
+            []
+            if self.config.calibration_side is not None
+            else [name for name, camera in self.cameras.items() if not camera.is_connected]
+        )
         if dead_sides or disconnected_cameras:
             self._safe_idle_workers()
             details = []
@@ -338,3 +426,10 @@ class BiYAMFollower(Robot):
             except Exception as exc:
                 errors.append(f"{side} arm: {exc}")
         return errors
+
+
+class AfterQueryDualYAM(BiYAMFollower):
+    """The dual-YAM installation attached to the AfterQuery Raspberry Pi client."""
+
+    config_class = AfterQueryDualYAMConfig
+    name = "afterquery_dual_yam"

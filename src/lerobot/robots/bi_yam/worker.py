@@ -33,6 +33,8 @@ class ArmBackend(Protocol):
 
     def get_joint_pos(self) -> np.ndarray: ...
 
+    def get_robot_info(self) -> dict[str, Any]: ...
+
     def command_joint_pos(self, joint_pos: np.ndarray) -> None: ...
 
     def close(self) -> None: ...
@@ -62,6 +64,7 @@ class ArmState:
     control_sequence: int
     last_applied_command_sequence: int
     last_applied_positions: tuple[float, ...] | None
+    gripper_limits: tuple[float, float] | None = None
     fault: str | None = None
 
 
@@ -120,6 +123,17 @@ def _enter_safe_idle(backend: ArmBackend) -> None:
     raise RuntimeError("i2rt backend does not expose a safe idle operation")
 
 
+def _read_gripper_limits(backend: ArmBackend) -> tuple[float, float] | None:
+    info = backend.get_robot_info()
+    raw_limits = info.get("gripper_limits")
+    if raw_limits is None:
+        return None
+    limits = np.asarray(raw_limits, dtype=np.float64)
+    if limits.shape != (2,) or not np.isfinite(limits).all() or limits[0] == limits[1]:
+        raise RuntimeError("i2rt returned invalid gripper limits")
+    return (float(limits[0]), float(limits[1]))
+
+
 class ArmWorkerRuntime:
     """State machine executed inside exactly one arm-owning process."""
 
@@ -141,6 +155,7 @@ class ArmWorkerRuntime:
             raise ValueError(
                 f"BiYAM requires seven controllable values per arm, got {self._backend.num_dofs()}"
             )
+        self._gripper_limits = _read_gripper_limits(self._backend)
         _enter_safe_idle(self._backend)
 
     def handle_control(self, control: ArmControl) -> None:
@@ -208,6 +223,7 @@ class ArmWorkerRuntime:
             control_sequence=self._control_sequence,
             last_applied_command_sequence=self._last_applied_sequence,
             last_applied_positions=self._last_applied_positions,
+            gripper_limits=self._gripper_limits,
             fault=self._fault,
         )
 

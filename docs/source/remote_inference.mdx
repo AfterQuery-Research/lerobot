@@ -82,12 +82,34 @@ Configure the two CAN interfaces and verify each arm independently before
 autonomous rollout. The physical adapter starts one isolated i2rt worker per
 arm and keeps both workers idle until server negotiation succeeds.
 
-An i2rt `linear_4310` gripper without a raw `[closed, open]` override normally
-performs a moving calibration while the robot is constructed. The adapter
-refuses that behavior by default, before opening the CAN interface. Record each
-arm's limits during a supervised one-arm-at-a-time calibration, then supply the
-values through `gripper_limits_override`. Do not enable moving calibration in an
-autonomous rollout configuration.
+The registered `afterquery_dual_yam` robot type provides typed defaults for the
+lab installation: `can_yam_new` on the left, `can_yam_old` on the right, the
+verified `top`, `left`, and `right` RealSense serials at 640x360 and 30 FPS, and
+conservative per-tick deltas of 0.03 radians for joints and 0.03 normalized units
+for grippers. Server address, task, and duration remain runtime arguments.
+
+An i2rt `linear_4310` gripper without raw `[closed, open]` endpoints normally
+performs a moving calibration while the robot is constructed. Normal rollout
+refuses that behavior before either CAN interface opens. Calibrate each gripper
+separately under supervision; each command below intentionally moves only the
+selected gripper:
+
+```bash
+uv run lerobot-calibrate \
+    --robot.type=afterquery_dual_yam \
+    --robot.calibration_side=left \
+    --robot.left_arm_config.allow_gripper_calibration=true
+
+uv run lerobot-calibrate \
+    --robot.type=afterquery_dual_yam \
+    --robot.calibration_side=right \
+    --robot.right_arm_config.allow_gripper_calibration=true
+```
+
+The two commands merge their results into the standard LeRobot calibration file
+for robot ID `afterquery_dual_yam`. Calibration mode starts only the selected
+arm, does not open cameras, and disables policy control. Do not set
+`allow_gripper_calibration` during an autonomous rollout.
 
 ```bash
 export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
@@ -95,30 +117,18 @@ export LEROBOT_REMOTE_AUTH_TOKEN="<same token as the server>"
 uv run lerobot-rollout \
     --strategy.type=base \
     --inference.type=remote \
-    --inference.server_address=policy-host:8081 \
+    --inference.server_address=127.0.0.1:8081 \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --robot.type=bi_yam_follower \
-    --robot.left_arm_config.channel=can_yam_new \
-    --robot.left_arm_config.gripper_limits_override='[<left closed>, <left open>]' \
-    --robot.right_arm_config.channel=can_yam_old \
-    --robot.right_arm_config.gripper_limits_override='[<right closed>, <right open>]' \
-    --robot.cameras='{
-      top: {type: intelrealsense, serial_number_or_name: "<top serial>", width: 640, height: 360, fps: 30},
-      left: {type: intelrealsense, serial_number_or_name: "<left serial>", width: 640, height: 360, fps: 30},
-      right: {type: intelrealsense, serial_number_or_name: "<right serial>", width: 640, height: 360, fps: 30}
-    }' \
+    --robot.type=afterquery_dual_yam \
     --task="Pick up the object with both arms" \
     --fps=30 \
     --duration=5 \
     --return_to_initial_position=false
 ```
 
-The AfterQuery lab Raspberry Pi mapping is checked into
-`configs/deployment/afterquery_dual_yam_client.yaml`. Its two gripper overrides
-are intentionally `null`, so it cannot open either CAN interface until the
-supervised calibration values are filled in. It maps the front D435 to `top`,
-the two D405 wrist cameras to `left` and `right`, and uses an SSH-tunneled policy
-server at `127.0.0.1:8081`.
+The generic `bi_yam_follower` type remains available for other installations;
+its channels, cameras, and any explicit gripper overrides can be supplied with
+normal dataclass-backed CLI arguments.
 
 Camera dictionary order is part of the model contract. A missing, extra, or
 reordered camera, state field, or action field makes session setup fail before

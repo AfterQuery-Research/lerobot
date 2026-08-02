@@ -16,8 +16,10 @@
 
 import math
 from dataclasses import dataclass, field
+from typing import Literal
 
 from lerobot.cameras import CameraConfig
+from lerobot.cameras.realsense import RealSenseCameraConfig
 
 from ..config import RobotConfig
 
@@ -52,6 +54,24 @@ def _validate_limits(name: str, limits: list[tuple[float, float]], expected: int
             raise ValueError(f"{name}[{index}] must be a finite, increasing interval")
 
 
+def _validate_raw_gripper_limits(name: str, limits: tuple[float, float]) -> None:
+    if len(limits) != 2:
+        raise ValueError(f"{name} must contain [closed, open]")
+    closed, open_ = limits
+    if not math.isfinite(closed) or not math.isfinite(open_) or closed == open_:
+        raise ValueError(f"{name} must contain two distinct finite values")
+
+
+@dataclass(frozen=True)
+class YAMGripperCalibration:
+    """Raw i2rt gripper endpoints persisted in LeRobot's calibration directory."""
+
+    gripper_limits: tuple[float, float]
+
+    def __post_init__(self) -> None:
+        _validate_raw_gripper_limits("gripper_limits", self.gripper_limits)
+
+
 @dataclass(kw_only=True)
 class YAMArmConfig:
     channel: str
@@ -73,11 +93,7 @@ class YAMArmConfig:
         if not math.isfinite(self.worker_poll_interval_s) or self.worker_poll_interval_s <= 0:
             raise ValueError("worker_poll_interval_s must be positive")
         if self.gripper_limits_override is not None:
-            if len(self.gripper_limits_override) != 2:
-                raise ValueError("gripper_limits_override must contain [closed, open]")
-            closed, open_ = self.gripper_limits_override
-            if not math.isfinite(closed) or not math.isfinite(open_) or closed == open_:
-                raise ValueError("gripper_limits_override must contain two distinct finite values")
+            _validate_raw_gripper_limits("gripper_limits_override", self.gripper_limits_override)
             if self.allow_gripper_calibration:
                 raise ValueError(
                     "gripper_limits_override and allow_gripper_calibration cannot be set together"
@@ -107,6 +123,8 @@ class BiYAMFollowerConfig(RobotConfig):
     left_arm_config: YAMArmConfig = field(default_factory=lambda: YAMArmConfig(channel="can0"))
     right_arm_config: YAMArmConfig = field(default_factory=lambda: YAMArmConfig(channel="can1"))
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    # Set only while running lerobot-calibrate for one arm. Normal rollout leaves this unset.
+    calibration_side: Literal["left", "right"] | None = None
 
     startup_timeout_s: float = 15.0
     state_timeout_s: float = 0.25
@@ -122,6 +140,8 @@ class BiYAMFollowerConfig(RobotConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.calibration_side not in (None, "left", "right"):
+            raise ValueError("calibration_side must be left, right, or unset")
         for name in (
             "startup_timeout_s",
             "state_timeout_s",
@@ -139,3 +159,46 @@ class BiYAMFollowerConfig(RobotConfig):
         _validate_limits("left_joint_limits", self.left_joint_limits, 6)
         _validate_limits("right_joint_limits", self.right_joint_limits, 6)
         _validate_limits("gripper_limits", [self.gripper_limits], 1)
+
+
+def _afterquery_camera(serial_number: str) -> RealSenseCameraConfig:
+    return RealSenseCameraConfig(
+        serial_number_or_name=serial_number,
+        width=640,
+        height=360,
+        fps=30,
+        use_rgb=True,
+        use_depth=False,
+        warmup_s=2,
+    )
+
+
+def _afterquery_cameras() -> dict[str, CameraConfig]:
+    return {
+        "top": _afterquery_camera("262422074066"),
+        "left": _afterquery_camera("323622270338"),
+        "right": _afterquery_camera("323622270243"),
+    }
+
+
+@dataclass(kw_only=True)
+class AfterQueryLeftYAMArmConfig(YAMArmConfig):
+    channel: str = "can_yam_new"
+
+
+@dataclass(kw_only=True)
+class AfterQueryRightYAMArmConfig(YAMArmConfig):
+    channel: str = "can_yam_old"
+
+
+@RobotConfig.register_subclass("afterquery_dual_yam")
+@dataclass(kw_only=True)
+class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
+    """Typed defaults for the dual-YAM installation in the AfterQuery lab."""
+
+    id: str | None = "afterquery_dual_yam"
+    left_arm_config: AfterQueryLeftYAMArmConfig = field(default_factory=AfterQueryLeftYAMArmConfig)
+    right_arm_config: AfterQueryRightYAMArmConfig = field(default_factory=AfterQueryRightYAMArmConfig)
+    cameras: dict[str, CameraConfig] = field(default_factory=_afterquery_cameras)
+    max_joint_delta: float = 0.03
+    max_gripper_delta: float = 0.03

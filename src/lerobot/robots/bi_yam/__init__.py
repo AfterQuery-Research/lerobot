@@ -14,15 +14,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .bi_yam import BiYAMFollower
-from .config_bi_yam import YAM_SCALAR_KEYS, BiYAMFollowerConfig, YAMArmConfig
+from .bi_yam import AfterQueryDualYAM, BiYAMFollower
+from .config_bi_yam import (
+    YAM_SCALAR_KEYS,
+    AfterQueryDualYAMConfig,
+    AfterQueryLeftYAMArmConfig,
+    AfterQueryRightYAMArmConfig,
+    BiYAMFollowerConfig,
+    YAMArmConfig,
+    YAMGripperCalibration,
+)
 from .sim_bi_yam import BiYAMSimulatorRobot, BiYAMSimulatorRobotConfig
 
 __all__ = [
+    "AfterQueryDualYAM",
+    "AfterQueryDualYAMConfig",
+    "AfterQueryLeftYAMArmConfig",
+    "AfterQueryRightYAMArmConfig",
     "BiYAMFollower",
     "BiYAMFollowerConfig",
     "BiYAMSimulatorRobot",
     "BiYAMSimulatorRobotConfig",
     "YAMArmConfig",
+    "YAMGripperCalibration",
     "YAM_SCALAR_KEYS",
 ]
