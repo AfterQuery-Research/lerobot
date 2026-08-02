@@ -295,6 +295,14 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.right_arm_config.channel == "can_yam_old"
     assert config.left_arm_config.command_ttl_s == 1.0
     assert config.right_arm_config.command_ttl_s == 1.0
+    assert config.left_arm_config.gripper_limits_override == (
+        6.370450904097048,
+        1.223964293888761,
+    )
+    assert config.right_arm_config.gripper_limits_override == (
+        6.396772716868849,
+        1.2010757610437164,
+    )
     assert not config.left_arm_config.allow_gripper_calibration
     assert not config.right_arm_config.allow_gripper_calibration
     assert config.calibration_side is None
@@ -327,7 +335,7 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
 
     assert isinstance(robot, AfterQueryDualYAM)
     assert robot.calibration_fpath == tmp_path / "afterquery_dual_yam.json"
-    assert not robot.is_calibrated
+    assert robot.is_calibrated
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
@@ -337,6 +345,7 @@ def test_afterquery_calibration_cli_keeps_nested_hardware_defaults(side):
         args=[
             "--robot.type=afterquery_dual_yam",
             f"--robot.calibration_side={side}",
+            f"--robot.{side}_arm_config.gripper_limits_override=null",
             f"--robot.{side}_arm_config.allow_gripper_calibration=true",
         ],
     )
@@ -345,6 +354,7 @@ def test_afterquery_calibration_cli_keeps_nested_hardware_defaults(side):
     assert config.robot.left_arm_config.channel == "can_yam_new"
     assert config.robot.right_arm_config.channel == "can_yam_old"
     assert config.robot.calibration_side == side
+    assert getattr(config.robot, f"{side}_arm_config").gripper_limits_override is None
     assert getattr(config.robot, f"{side}_arm_config").allow_gripper_calibration
 
 
