@@ -289,11 +289,13 @@ def test_afterquery_preset_has_typed_hardware_defaults_and_factory_support(tmp_p
     assert config.id == "afterquery_dual_yam"
     assert config.left_arm_config.channel == "can_yam_new"
     assert config.right_arm_config.channel == "can_yam_old"
+    assert config.left_arm_config.command_ttl_s == 1.0
+    assert config.right_arm_config.command_ttl_s == 1.0
     assert not config.left_arm_config.allow_gripper_calibration
     assert not config.right_arm_config.allow_gripper_calibration
     assert config.calibration_side is None
-    assert config.max_joint_delta == 0.03
-    assert config.max_gripper_delta == 0.03
+    assert config.max_joint_delta == 0.003
+    assert config.max_gripper_delta == 0.003
     assert list(config.cameras) == ["top", "left", "right"]
     assert {name: camera.serial_number_or_name for name, camera in config.cameras.items()} == {
         "top": "262422074066",

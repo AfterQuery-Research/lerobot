@@ -184,11 +184,13 @@ def _afterquery_cameras() -> dict[str, CameraConfig]:
 @dataclass(kw_only=True)
 class AfterQueryLeftYAMArmConfig(YAMArmConfig):
     channel: str = "can_yam_new"
+    command_ttl_s: float = 1.0
 
 
 @dataclass(kw_only=True)
 class AfterQueryRightYAMArmConfig(YAMArmConfig):
     channel: str = "can_yam_old"
+    command_ttl_s: float = 1.0
 
 
 @RobotConfig.register_subclass("afterquery_dual_yam")
@@ -200,5 +202,5 @@ class AfterQueryDualYAMConfig(BiYAMFollowerConfig):
     left_arm_config: AfterQueryLeftYAMArmConfig = field(default_factory=AfterQueryLeftYAMArmConfig)
     right_arm_config: AfterQueryRightYAMArmConfig = field(default_factory=AfterQueryRightYAMArmConfig)
     cameras: dict[str, CameraConfig] = field(default_factory=_afterquery_cameras)
-    max_joint_delta: float = 0.03
-    max_gripper_delta: float = 0.03
+    max_joint_delta: float = 0.003
+    max_gripper_delta: float = 0.003
