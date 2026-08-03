@@ -117,6 +117,7 @@ def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
 
     assert cfg.policy is None
     assert cfg.device == "cpu"
+    assert cfg.display_data is False
 
 
 def test_rollout_log_file_creates_parent_and_configures_file_logging(tmp_path, monkeypatch):
