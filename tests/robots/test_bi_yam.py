@@ -216,13 +216,15 @@ class FakeCamera:
         self.fail_connect = fail_connect
         self.is_connected = False
         self.disconnect_calls = 0
+        self.read_latest_calls = 0
 
     def connect(self) -> None:
         self.is_connected = True
         if self.fail_connect:
             raise RuntimeError("camera startup failed")
 
-    def async_read(self) -> np.ndarray:
+    def read_latest(self) -> np.ndarray:
+        self.read_latest_calls += 1
         return np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
     def disconnect(self) -> None:
@@ -644,6 +646,7 @@ def test_connect_stays_disarmed_and_observation_uses_ordered_state_and_camera(tm
     expected[13] = 1.0
     assert [observation[key] for key in YAM_SCALAR_KEYS] == pytest.approx(expected)
     assert observation["top"].shape == (3, 4, 3)
+    assert camera.read_latest_calls == 1
     assert set(robot.state_metadata) == {"left", "right"}
 
     with pytest.raises(RuntimeError, match="arm it locally"):

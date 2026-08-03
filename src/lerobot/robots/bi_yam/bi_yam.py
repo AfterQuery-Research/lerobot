@@ -212,9 +212,9 @@ class BiYAMFollower(Robot):
             for name, camera in self.cameras.items():
                 config = self.config.cameras[name]
                 if getattr(config, "use_rgb", True):
-                    observation[name] = camera.async_read()
+                    observation[name] = camera.read_latest()
                 if getattr(config, "use_depth", False):
-                    observation[f"{name}_depth"] = camera.async_read_depth()
+                    observation[f"{name}_depth"] = camera.read_latest_depth()
         except Exception:
             self._safe_idle_workers()
             raise
