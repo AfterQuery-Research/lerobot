@@ -262,7 +262,7 @@ class RolloutConfig:
     # Optional Python application log. The rollout entry point creates its parent directory.
     log_file: Path | None = None
     display_data: bool = False
-    # Visualization backend used when display_data is True: "rerun" or "foxglove".
+    # Visualization backend used when display_data is True: "rerun", "foxglove", or "local".
     display_mode: str = "rerun"
     # For "rerun": IP of a remote server to send to. For "foxglove": interface to bind the WebSocket
     # server to (127.0.0.1 for local only, 0.0.0.0 for all interfaces).

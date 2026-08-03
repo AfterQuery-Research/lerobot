@@ -224,7 +224,14 @@ def rollout(cfg: RolloutConfig):
             cfg.display_ip,
             cfg.display_port,
         )
-        init_visualization(cfg.display_mode, session_name="rollout", ip=cfg.display_ip, port=cfg.display_port)
+        task = cfg.dataset.single_task if cfg.dataset else cfg.task
+        init_visualization(
+            cfg.display_mode,
+            session_name="rollout",
+            ip=cfg.display_ip,
+            port=cfg.display_port,
+            task=task,
+        )
 
     signal_handler = ProcessSignalHandler(use_threads=True, display_pid=False)
     shutdown_event = signal_handler.shutdown_event

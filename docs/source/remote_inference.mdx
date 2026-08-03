@@ -228,6 +228,25 @@ errors, and clipped joints. The application log records LeRobot messages,
 including remote chunk timing and control summaries, at `DEBUG` level in
 `logs/yam-rollout.log`. The file is appended across runs.
 
+### Local camera preview
+
+To display the three camera views and active task on a monitor connected to the
+robot computer, launch the rollout from a terminal on its Ubuntu desktop and add:
+
+```bash
+    --display_data=true \
+    --display_mode=local
+```
+
+The preview places `top`, `left`, and `right` side by side in one window. It runs
+on a background thread at up to 15 FPS and keeps only its newest frame so display
+work cannot queue behind the control loop. The window closes automatically when
+the rollout exits.
+
+If the command is launched through SSH, or Ubuntu has no graphical display, local
+visualization is disabled automatically and the rollout continues without a
+window. Remove the two flags when no preview is wanted.
+
 ## Reset and safety behavior
 
 The default reset target is:
