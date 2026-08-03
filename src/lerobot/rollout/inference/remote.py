@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import uuid
@@ -30,6 +31,7 @@ from lerobot.remote_inference.schema import (
     EmbodimentManifest,
     ImageEncoding,
     ImageFrame,
+    PolicyActionChunk,
     PolicyObservation,
     ProtocolValidationError,
 )
@@ -59,7 +61,7 @@ class RemoteEngineSettings:
     tls_client_cert_path: str | None
     tls_client_key_path: str | None
     tls_server_name_override: str | None
-    prefetch_threshold: int
+    execution_horizon: int
     image_encoding: ImageEncoding
     camera_calibration_sha256: dict[str, str]
 
@@ -70,6 +72,12 @@ class _ObservationSnapshot:
     capture_tick: int
     capture_monotonic_ns: int
     values: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _PendingChunk:
+    chunk: PolicyActionChunk
+    round_trip_ns: int
 
 
 class RemoteInferenceEngine(InferenceEngine):
@@ -86,8 +94,8 @@ class RemoteInferenceEngine(InferenceEngine):
         fps: float,
         shutdown_event: threading.Event | None = None,
     ) -> None:
-        if settings.prefetch_threshold < 0:
-            raise ValueError("remote prefetch threshold must be non-negative")
+        if settings.execution_horizon <= 0:
+            raise ValueError("remote execution horizon must be positive")
         self._settings = settings
         self._robot = robot_wrapper
         self._dataset_features = dataset_features
@@ -99,11 +107,19 @@ class RemoteInferenceEngine(InferenceEngine):
         self._manifest = self._build_embodiment_manifest()
         self._client: RemotePolicyClient | None = None
         self._action_queue: deque[torch.Tensor] = deque()
+        self._pending_chunk: _PendingChunk | None = None
         self._latest_observation: _ObservationSnapshot | None = None
         self._sequence = 0
         self._last_submitted_sequence = -1
         self._current_tick = 0
         self._last_executed_tick = 0
+        self._model_action_horizon: int | None = None
+        self._active_chunk_sequence: int | None = None
+        self._active_chunk_actions_sent = 0
+        self._switch_tick: int | None = None
+        self._request_tick: int | None = None
+        self._request_in_flight = False
+        self._round_trip_samples_ns: deque[int] = deque(maxlen=32)
         self._last_chunk_log_ns = 0
         self._lock = threading.Lock()
         self._observation_ready = threading.Event()
@@ -178,12 +194,19 @@ class RemoteInferenceEngine(InferenceEngine):
             )
         )
         try:
-            self._client.connect(
+            session = self._client.connect(
                 self._manifest,
                 task=self._task,
                 requested_model_id=self._settings.requested_model_id,
                 client_instance_id=self._settings.client_instance_id,
             )
+            if self._settings.execution_horizon > session.model.action_horizon:
+                raise ValueError(
+                    "remote execution_horizon "
+                    f"({self._settings.execution_horizon}) exceeds model action horizon "
+                    f"({session.model.action_horizon})"
+                )
+            self._model_action_horizon = session.model.action_horizon
         except Exception:
             self._client.close()
             self._client = None
@@ -193,7 +216,12 @@ class RemoteInferenceEngine(InferenceEngine):
         self._ready.set()
         self._thread = threading.Thread(target=self._inference_loop, daemon=True, name="RemoteInference")
         self._thread.start()
-        logger.info("Remote inference connected to %s", self._settings.server_address)
+        logger.info(
+            "Remote inference connected to %s (prediction_horizon=%d, execution_horizon=%d)",
+            self._settings.server_address,
+            self._model_action_horizon,
+            self._settings.execution_horizon,
+        )
 
     def stop(self) -> None:
         self._policy_active.clear()
@@ -207,23 +235,24 @@ class RemoteInferenceEngine(InferenceEngine):
             self._client = None
         self._ready.clear()
         with self._lock:
-            self._action_queue.clear()
+            self._clear_scheduler_locked()
 
     def reset(self) -> None:
         with self._lock:
-            self._action_queue.clear()
+            self._clear_scheduler_locked()
             self._latest_observation = None
             self._sequence = 0
             self._last_submitted_sequence = -1
             self._current_tick = 0
             self._last_executed_tick = 0
+            self._request_in_flight = False
         if self._client is not None and self._client.connected:
             self._client.reset()
 
     def pause(self) -> None:
         self._policy_active.clear()
         with self._lock:
-            self._action_queue.clear()
+            self._clear_scheduler_locked()
 
     def resume(self) -> None:
         if not self.failed:
@@ -243,23 +272,130 @@ class RemoteInferenceEngine(InferenceEngine):
             )
             self._sequence += 1
             self._latest_observation = snapshot
-            should_request = len(self._action_queue) <= self._settings.prefetch_threshold
+            should_request = self._should_request_locked()
         if should_request:
             self._observation_ready.set()
 
     def get_action(self, obs_frame: dict | None) -> torch.Tensor | None:
         del obs_frame
         with self._lock:
+            self._activate_pending_if_due_locked()
             action = self._action_queue.popleft() if self._action_queue else None
-            should_request = len(self._action_queue) <= self._settings.prefetch_threshold
+            should_request = self._should_request_locked()
         if should_request:
             self._observation_ready.set()
         return action
 
     def notify_action_sent(self) -> None:
         with self._lock:
+            if self._active_chunk_sequence is not None:
+                self._active_chunk_actions_sent += 1
             self._last_executed_tick = self._current_tick
             self._current_tick += 1
+            self._activate_pending_if_due_locked()
+            should_request = self._should_request_locked()
+        if should_request:
+            self._observation_ready.set()
+
+    def _clear_scheduler_locked(self) -> None:
+        self._action_queue.clear()
+        self._pending_chunk = None
+        self._active_chunk_sequence = None
+        self._active_chunk_actions_sent = 0
+        self._switch_tick = None
+        self._request_tick = None
+
+    def _latency_budget_steps_locked(self) -> int:
+        if not self._round_trip_samples_ns:
+            return 1
+        round_trip_ns = float(np.percentile(np.asarray(self._round_trip_samples_ns), 95))
+        return max(1, math.ceil(round_trip_ns / 1e9 * self._fps) + 2)
+
+    def _should_request_locked(self) -> bool:
+        snapshot = self._latest_observation
+        if (
+            snapshot is None
+            or snapshot.sequence <= self._last_submitted_sequence
+            or self._request_in_flight
+            or self._pending_chunk is not None
+        ):
+            return False
+        if self._active_chunk_sequence is None or not self._action_queue:
+            return True
+        return self._request_tick is not None and self._current_tick >= self._request_tick
+
+    def _activate_pending_if_due_locked(self) -> bool:
+        if self._pending_chunk is None:
+            return False
+        if (
+            self._active_chunk_sequence is not None
+            and self._action_queue
+            and self._switch_tick is not None
+            and self._current_tick < self._switch_tick
+        ):
+            return False
+        return self._activate_pending_chunk_locked()
+
+    def _activate_pending_chunk_locked(self) -> bool:
+        pending = self._pending_chunk
+        if pending is None:
+            return False
+        self._pending_chunk = None
+        chunk = pending.chunk
+        elapsed_steps = max(0, self._current_tick - chunk.first_action_tick)
+        if elapsed_steps >= chunk.actions.shape[0]:
+            logger.warning(
+                "Discarding fully stale action chunk for observation %d "
+                "(round_trip=%.1fms, server=%.1fms, elapsed_steps=%d)",
+                chunk.observation_sequence,
+                pending.round_trip_ns / 1e6,
+                chunk.server_compute_ns / 1e6,
+                elapsed_steps,
+            )
+            return False
+
+        previous_actions_sent = self._active_chunk_actions_sent
+        previous_switch_tick = self._switch_tick
+        future = chunk.actions[elapsed_steps:]
+        self._action_queue.clear()
+        self._action_queue.extend(torch.from_numpy(action.copy()) for action in future)
+        self._active_chunk_sequence = chunk.observation_sequence
+        self._active_chunk_actions_sent = 0
+
+        committed_actions = min(self._settings.execution_horizon, len(self._action_queue))
+        self._switch_tick = self._current_tick + committed_actions
+        latency_budget_steps = self._latency_budget_steps_locked()
+        self._request_tick = max(self._current_tick, self._switch_tick - latency_budget_steps)
+        transition_late_steps = (
+            max(0, self._current_tick - previous_switch_tick) if previous_switch_tick is not None else 0
+        )
+
+        now_ns = time.monotonic_ns()
+        should_log_info = now_ns - self._last_chunk_log_ns >= 5_000_000_000
+        log = logger.info if should_log_info else logger.debug
+        log(
+            "Remote chunk %d activated (round_trip=%.1fms, server=%.1fms, discarded=%d, "
+            "queued=%d, commit=%d, request_tick=%d, previous_executed=%d, late=%d)",
+            chunk.observation_sequence,
+            pending.round_trip_ns / 1e6,
+            chunk.server_compute_ns / 1e6,
+            elapsed_steps,
+            len(self._action_queue),
+            committed_actions,
+            self._request_tick,
+            previous_actions_sent,
+            transition_late_steps,
+        )
+        if should_log_info:
+            self._last_chunk_log_ns = now_ns
+        if committed_actions < self._settings.execution_horizon:
+            logger.warning(
+                "Remote chunk %d has only %d latency-aligned actions available for execution_horizon=%d",
+                chunk.observation_sequence,
+                committed_actions,
+                self._settings.execution_horizon,
+            )
+        return True
 
     def _make_policy_observation(
         self,
@@ -297,17 +433,13 @@ class RemoteInferenceEngine(InferenceEngine):
             if self._stop_event.is_set() or not self._policy_active.is_set():
                 continue
             with self._lock:
-                snapshot = self._latest_observation
-                queue_depth = len(self._action_queue)
-                if (
-                    snapshot is None
-                    or snapshot.sequence <= self._last_submitted_sequence
-                    or queue_depth > self._settings.prefetch_threshold
-                ):
+                if not self._should_request_locked():
                     continue
+                snapshot = self._latest_observation
+                assert snapshot is not None
+                queue_depth = len(self._action_queue)
                 self._last_submitted_sequence = snapshot.sequence
-            if snapshot is None:
-                continue
+                self._request_in_flight = True
             try:
                 observation = self._make_policy_observation(snapshot, queue_depth)
                 request_started_ns = time.perf_counter_ns()
@@ -316,6 +448,10 @@ class RemoteInferenceEngine(InferenceEngine):
                 if self._stop_event.is_set():
                     return
                 with self._lock:
+                    self._request_in_flight = False
+                    if not self._policy_active.is_set():
+                        continue
+                    self._round_trip_samples_ns.append(round_trip_ns)
                     elapsed_steps = max(0, self._current_tick - chunk.first_action_tick)
                     if elapsed_steps >= chunk.actions.shape[0]:
                         logger.warning(
@@ -326,35 +462,22 @@ class RemoteInferenceEngine(InferenceEngine):
                             chunk.server_compute_ns / 1e6,
                             elapsed_steps,
                         )
-                        newer_observation = (
-                            self._latest_observation is not None
-                            and self._latest_observation.sequence > self._last_submitted_sequence
-                        )
-                        if newer_observation:
+                        if self._should_request_locked():
                             self._observation_ready.set()
                         continue
-                    future = chunk.actions[elapsed_steps:]
-                    self._action_queue.clear()
-                    self._action_queue.extend(torch.from_numpy(action.copy()) for action in future)
-                    queued_actions = len(self._action_queue)
-                    should_request = (
-                        len(self._action_queue) <= self._settings.prefetch_threshold
-                        and self._latest_observation is not None
-                        and self._latest_observation.sequence > self._last_submitted_sequence
-                    )
-                now_ns = time.monotonic_ns()
-                should_log_info = now_ns - self._last_chunk_log_ns >= 5_000_000_000
-                log = logger.info if should_log_info else logger.debug
-                log(
-                    "Remote chunk %d ready (round_trip=%.1fms, server=%.1fms, discarded=%d, queued=%d)",
-                    chunk.observation_sequence,
-                    round_trip_ns / 1e6,
-                    chunk.server_compute_ns / 1e6,
-                    elapsed_steps,
-                    queued_actions,
-                )
-                if should_log_info:
-                    self._last_chunk_log_ns = now_ns
+                    self._pending_chunk = _PendingChunk(chunk=chunk, round_trip_ns=round_trip_ns)
+                    if self._active_chunk_sequence is None:
+                        self._activate_pending_chunk_locked()
+                    else:
+                        logger.debug(
+                            "Remote chunk %d ready for execution boundary at tick %s "
+                            "(round_trip=%.1fms, currently_executed=%d)",
+                            chunk.observation_sequence,
+                            self._switch_tick,
+                            round_trip_ns / 1e6,
+                            self._active_chunk_actions_sent,
+                        )
+                    should_request = self._should_request_locked()
                 if should_request:
                     self._observation_ready.set()
             except (RemotePolicyError, ProtocolValidationError, KeyError, ValueError) as exc:
@@ -362,7 +485,8 @@ class RemoteInferenceEngine(InferenceEngine):
                     return
                 logger.error("Remote inference stopped: %s", exc)
                 with self._lock:
-                    self._action_queue.clear()
+                    self._request_in_flight = False
+                    self._clear_scheduler_locked()
                 self._failed.set()
                 self._policy_active.clear()
                 if self._global_shutdown_event is not None:
@@ -373,7 +497,8 @@ class RemoteInferenceEngine(InferenceEngine):
                     return
                 logger.exception("Remote inference stopped after an unexpected error")
                 with self._lock:
-                    self._action_queue.clear()
+                    self._request_in_flight = False
+                    self._clear_scheduler_locked()
                 self._failed.set()
                 self._policy_active.clear()
                 if self._global_shutdown_event is not None:

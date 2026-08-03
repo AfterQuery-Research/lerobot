@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -58,6 +59,20 @@ class BlockingBackend(CountingBackend):
         self.started.set()
         if not self.release.wait(timeout=2.0):
             raise TimeoutError("test backend was not released")
+        return super().infer(observation)
+
+
+class SecondCallBlockingBackend(CountingBackend):
+    def __init__(self, *, action_horizon: int = 8) -> None:
+        super().__init__(action_horizon=action_horizon)
+        self.second_started = threading.Event()
+        self.release_second = threading.Event()
+
+    def infer(self, observation):
+        if self.inference_count == 1:
+            self.second_started.set()
+            if not self.release_second.wait(timeout=2.0):
+                raise TimeoutError("test backend second request was not released")
         return super().infer(observation)
 
 
@@ -117,7 +132,7 @@ def _settings(address: str) -> RemoteEngineSettings:
         tls_client_cert_path=None,
         tls_client_key_path=None,
         tls_server_name_override=None,
-        prefetch_threshold=10,
+        execution_horizon=2,
         image_encoding=ImageEncoding.PNG,
         camera_calibration_sha256={},
     )
@@ -171,6 +186,110 @@ def test_remote_engine_runs_real_transport_without_duplicate_requests():
         engine.notify_observation(_observation(0.5))
         _wait_for(lambda: backend.inference_count == 2)
         assert not engine.failed
+    finally:
+        engine.stop()
+        server.stop(grace=0).wait()
+
+
+def test_execution_horizon_holds_early_chunk_until_boundary():
+    port = _free_port()
+    backend = CountingBackend(action_horizon=8)
+    server, _ = create_grpc_server(RemotePolicyServerConfig(port=port), backend)
+    server.start()
+    address = f"127.0.0.1:{port}"
+    engine = RemoteInferenceEngine(
+        settings=replace(_settings(address), execution_horizon=4),
+        robot_wrapper=FakeRobotWrapper(),
+        dataset_features=DATASET_FEATURES,
+        ordered_action_keys=list(STATE_FEATURES),
+        task="test task",
+        fps=30.0,
+    )
+    try:
+        engine.start()
+        engine.resume()
+        engine.notify_observation(_observation(0.25))
+        _wait_for(lambda: engine.action_queue_depth == 8)
+
+        assert np.allclose(engine.get_action(None).numpy(), [0.25, 0.75])
+        engine.notify_action_sent()
+        engine.notify_observation(_observation(0.5))
+        _wait_for(lambda: backend.inference_count == 2)
+        assert engine._pending_chunk is not None
+
+        for _ in range(3):
+            assert np.allclose(engine.get_action(None).numpy(), [0.25, 0.75])
+            engine.notify_action_sent()
+            engine.notify_observation(_observation(0.5))
+
+        assert engine._pending_chunk is None
+        assert engine._active_chunk_sequence == 1
+        assert np.allclose(engine.get_action(None).numpy(), [0.5, 1.0])
+    finally:
+        engine.stop()
+        server.stop(grace=0).wait()
+
+
+def test_late_chunk_keeps_executing_previous_chunk_tail():
+    port = _free_port()
+    backend = SecondCallBlockingBackend(action_horizon=8)
+    server, _ = create_grpc_server(RemotePolicyServerConfig(port=port), backend)
+    server.start()
+    address = f"127.0.0.1:{port}"
+    engine = RemoteInferenceEngine(
+        settings=replace(_settings(address), execution_horizon=4),
+        robot_wrapper=FakeRobotWrapper(),
+        dataset_features=DATASET_FEATURES,
+        ordered_action_keys=list(STATE_FEATURES),
+        task="test task",
+        fps=30.0,
+    )
+    try:
+        engine.start()
+        engine.resume()
+        engine.notify_observation(_observation(0.25))
+        _wait_for(lambda: engine.action_queue_depth == 8)
+
+        assert np.allclose(engine.get_action(None).numpy(), [0.25, 0.75])
+        engine.notify_action_sent()
+        engine.notify_observation(_observation(0.5))
+        assert backend.second_started.wait(timeout=1.0)
+
+        for _ in range(4):
+            assert np.allclose(engine.get_action(None).numpy(), [0.25, 0.75])
+            engine.notify_action_sent()
+            engine.notify_observation(_observation(0.5))
+
+        assert engine._current_tick == 5
+        assert engine._switch_tick == 4
+        backend.release_second.set()
+        _wait_for(lambda: backend.inference_count == 2)
+        _wait_for(lambda: engine._pending_chunk is not None)
+
+        assert np.allclose(engine.get_action(None).numpy(), [0.5, 1.0])
+    finally:
+        backend.release_second.set()
+        engine.stop()
+        server.stop(grace=0).wait()
+
+
+def test_execution_horizon_must_not_exceed_server_action_horizon():
+    port = _free_port()
+    backend = CountingBackend(action_horizon=4)
+    server, _ = create_grpc_server(RemotePolicyServerConfig(port=port), backend)
+    server.start()
+    address = f"127.0.0.1:{port}"
+    engine = RemoteInferenceEngine(
+        settings=replace(_settings(address), execution_horizon=5),
+        robot_wrapper=FakeRobotWrapper(),
+        dataset_features=DATASET_FEATURES,
+        ordered_action_keys=list(STATE_FEATURES),
+        task="test task",
+        fps=30.0,
+    )
+    try:
+        with pytest.raises(ValueError, match="exceeds model action horizon"):
+            engine.start()
     finally:
         engine.stop()
         server.stop(grace=0).wait()
@@ -261,10 +380,10 @@ def test_full_rollout_controls_shared_world_simulator_over_grpc(monkeypatch, tmp
             server_address=f"127.0.0.1:{port}",
             image_encoding="png",
             inference_timeout_s=1.0,
-            prefetch_threshold=20,
+            execution_horizon=15,
         ),
         fps=20.0,
-        duration=0.35,
+        duration=0.9,
         task="move the blocks",
         return_to_initial_position=False,
     )
@@ -276,7 +395,7 @@ def test_full_rollout_controls_shared_world_simulator_over_grpc(monkeypatch, tmp
         strategy.setup(ctx)
         assert ctx.hardware.robot_wrapper.inner.is_armed
         strategy.run(ctx)
-        assert backend.inference_count > 0
+        assert backend.inference_count >= 2
         assert ctx.hardware.robot_wrapper.inner.simulator.get_health().sim_time_ns > 0
     finally:
         strategy.teardown(ctx)
@@ -322,7 +441,7 @@ def test_action_probe_rollout_discards_actions_after_disarming(monkeypatch, tmp_
             server_address=f"127.0.0.1:{port}",
             image_encoding="png",
             inference_timeout_s=1.0,
-            prefetch_threshold=20,
+            execution_horizon=15,
         ),
         fps=20.0,
         duration=0.35,

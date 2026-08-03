@@ -183,6 +183,7 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --inference.execution_horizon=15 \
     --robot.type=bi_yam_follower \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
@@ -215,6 +216,7 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --inference.execution_horizon=15 \
     --robot.type=bi_yam_follower \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
@@ -229,6 +231,21 @@ uv run lerobot-rollout \
     --fps=30 \
     --duration=60
 ```
+
+MolmoAct2 predicts 30 future actions per request. `execution_horizon=15`
+commits the client to 15 latency-aligned actions from the active prediction
+before switching to the next one. The next request is still made
+asynchronously: the client measures recent round-trip latency and starts
+inference early enough for the result to arrive near the execution boundary.
+An early result waits for that boundary; if a result is late, the client keeps
+executing the unused tail of the previous 30-action chunk instead of stopping.
+Returned actions that became stale while inference was running are discarded
+by timestep before the chunk can become active.
+
+Shorter execution horizons react to new observations sooner but can switch
+between inconsistent trajectories more often. Longer horizons preserve motion
+more coherently but run open-loop for longer. The tested starting value for the
+30 Hz dual-YAM setup is `15`, or 0.5 seconds of committed control.
 
 Telemetry records requested, bounded, applied, and measured targets, tracking
 errors, and clipped joints. The application log records LeRobot messages,
@@ -278,6 +295,7 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --inference.execution_horizon=15 \
     --robot.type=bi_yam_simulator \
     --robot.backend=mujoco \
     --task="Pick up the oranges and put them in the bowl" \

@@ -106,6 +106,7 @@ def test_inference_config_types():
     remote = RemoteInferenceConfig()
     assert remote.type == "remote"
     assert remote.server_address == "127.0.0.1:8081"
+    assert remote.execution_horizon == 15
 
 
 def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
@@ -150,6 +151,7 @@ def test_remote_rollout_config_rejects_local_policy_path(monkeypatch):
     ("kwargs", "message"),
     [
         ({"connect_timeout_s": 0}, "timeouts"),
+        ({"execution_horizon": 0}, "execution_horizon"),
         ({"jpeg_quality": 101}, "jpeg_quality"),
         ({"image_encoding": "webp"}, "image_encoding"),
         ({"tls_client_cert_path": "cert.pem"}, "certificate and key"),

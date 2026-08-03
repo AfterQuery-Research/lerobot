@@ -88,7 +88,7 @@ class RemoteInferenceConfig(InferenceEngineConfig):
     max_message_bytes: int = 16 * 1024 * 1024
     jpeg_quality: int = 95
     image_encoding: str = "jpeg"
-    prefetch_threshold: int = 20
+    execution_horizon: int = 15
     tls_root_cert_path: str | None = None
     tls_client_cert_path: str | None = None
     tls_client_key_path: str | None = None
@@ -106,8 +106,8 @@ class RemoteInferenceConfig(InferenceEngineConfig):
             raise ValueError("remote max_message_bytes must be positive")
         if not 1 <= self.jpeg_quality <= 100:
             raise ValueError("remote jpeg_quality must be between 1 and 100")
-        if self.prefetch_threshold < 0:
-            raise ValueError("remote prefetch_threshold must be non-negative")
+        if self.execution_horizon <= 0:
+            raise ValueError("remote execution_horizon must be positive")
         if self.image_encoding.lower() not in {"raw_rgb", "png", "jpeg"}:
             raise ValueError("remote image_encoding must be raw_rgb, png, or jpeg")
         if bool(self.tls_client_cert_path) != bool(self.tls_client_key_path):
@@ -165,7 +165,7 @@ def create_inference_engine(
                 tls_client_cert_path=config.tls_client_cert_path,
                 tls_client_key_path=config.tls_client_key_path,
                 tls_server_name_override=config.tls_server_name_override,
-                prefetch_threshold=config.prefetch_threshold,
+                execution_horizon=config.execution_horizon,
                 image_encoding=parse_image_encoding(config.image_encoding),
                 camera_calibration_sha256=dict(config.camera_calibration_sha256),
             ),
