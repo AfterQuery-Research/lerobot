@@ -16,6 +16,7 @@
 
 from .bi_yam import BiYAMFollower
 from .config_bi_yam import (
+    BI_YAM_POLICY_END_POSITION,
     BI_YAM_POLICY_START_POSITION,
     YAM_SCALAR_KEYS,
     BiYAMFollowerConfig,
@@ -25,6 +26,7 @@ from .config_bi_yam import (
 from .sim_bi_yam import BiYAMSimulatorRobot, BiYAMSimulatorRobotConfig
 
 __all__ = [
+    "BI_YAM_POLICY_END_POSITION",
     "BI_YAM_POLICY_START_POSITION",
     "BiYAMFollower",
     "BiYAMFollowerConfig",

@@ -175,6 +175,8 @@ class RolloutStrategy(abc.ABC):
         robot = hw.robot_wrapper
         target = hw.initial_position
         try:
+            if robot.reset_after_policy() is not None:
+                return
             if robot.reset_for_policy() is not None:
                 return
             current_obs = robot.get_observation()

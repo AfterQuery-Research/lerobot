@@ -375,7 +375,7 @@ def test_thread_safe_robot_properties():
     robot.disconnect()
 
 
-def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
+def test_strategy_uses_distinct_policy_start_and_end_resets():
     from lerobot.rollout import BaseStrategyConfig
     from lerobot.rollout.context import HardwareContext
     from lerobot.rollout.robot_wrapper import ThreadSafeRobot
@@ -383,6 +383,7 @@ def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
 
     events = []
     reset_position = {"joint.pos": 0.25}
+    end_position = {"joint.pos": 0.0}
 
     class FakeEngine:
         def reset(self):
@@ -396,8 +397,12 @@ def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
             events.append("robot.arm")
 
         def reset_for_policy(self):
-            events.append("robot.reset")
+            events.append("robot.reset_for_policy")
             return reset_position
+
+        def reset_after_policy(self):
+            events.append("robot.reset_after_policy")
+            return end_position
 
     hardware = HardwareContext(
         robot_wrapper=ThreadSafeRobot(ResettableRobot()),
@@ -413,11 +418,11 @@ def test_strategy_resets_robot_after_engine_start_and_uses_pose_for_parking():
 
     strategy._init_engine(ctx)
 
-    assert events == ["engine.reset", "engine.start", "robot.arm", "robot.reset"]
+    assert events == ["engine.reset", "engine.start", "robot.arm", "robot.reset_for_policy"]
     assert hardware.initial_position == reset_position
 
     strategy._return_to_initial_position(hardware)
-    assert events[-1] == "robot.reset"
+    assert events[-1] == "robot.reset_after_policy"
 
 
 @pytest.mark.parametrize("reset_robot", [False, True])

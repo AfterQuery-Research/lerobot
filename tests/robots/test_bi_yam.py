@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from lerobot.robots.bi_yam import (
+    BI_YAM_POLICY_END_POSITION,
     BI_YAM_POLICY_START_POSITION,
     YAM_SCALAR_KEYS,
     BiYAMFollower,
@@ -777,6 +778,46 @@ def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_pat
     assert len(records) == len(commands)
     assert {record["phase"] for record in records} <= {"reset", "reset_hold"}
     assert records[-1]["applied"] == pytest.approx(target)
+
+
+def test_policy_end_reset_uses_fixed_home_pose_instead_of_configured_start(tmp_path):
+    configured_start = (
+        0.0,
+        0.4,
+        0.8,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.4,
+        0.8,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    config = make_config(
+        tmp_path,
+        policy_start_position=configured_start,
+        policy_reset_fps=10_000,
+        policy_reset_tolerance=0.001,
+        policy_reset_timeout_s=0.5,
+    )
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    workers["left"].positions = np.asarray(configured_start[:7], dtype=np.float64)
+    workers["right"].positions = np.asarray(configured_start[7:], dtype=np.float64)
+    robot.arm()
+
+    reset_position = robot.reset_after_policy()
+
+    assert reset_position == dict(zip(YAM_SCALAR_KEYS, BI_YAM_POLICY_END_POSITION, strict=True))
+    assert (*workers["left"].commands[-1].positions, *workers["right"].commands[-1].positions) == (
+        pytest.approx(BI_YAM_POLICY_END_POSITION)
+    )
+    assert tuple(reset_position.values()) != configured_start
+    robot.disconnect()
 
 
 def test_policy_reset_timeout_disarms_both_workers(tmp_path):

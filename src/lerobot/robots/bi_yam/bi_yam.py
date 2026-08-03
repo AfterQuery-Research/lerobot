@@ -38,6 +38,7 @@ from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnected
 
 from ..robot import Robot
 from .config_bi_yam import (
+    BI_YAM_POLICY_END_POSITION,
     YAM_SCALAR_KEYS,
     BiYAMFollowerConfig,
     YAMArmConfig,
@@ -253,6 +254,23 @@ class BiYAMFollower(Robot):
         if configured_target is None:
             return None
 
+        return self._reset_to_policy_position(configured_target, pose_name="policy start position")
+
+    def reset_after_policy(self) -> RobotAction:
+        """Return to the fixed zero-joint, open-gripper pose after policy control."""
+        return self._reset_to_policy_position(
+            BI_YAM_POLICY_END_POSITION,
+            pose_name="policy end position",
+        )
+
+    def _reset_to_policy_position(
+        self,
+        configured_target: tuple[float, ...],
+        *,
+        pose_name: str,
+    ) -> RobotAction:
+        """Move both arms to a validated policy lifecycle pose."""
+
         self._require_rollout_mode()
         self._require_connected()
         if not self._armed:
@@ -262,14 +280,14 @@ class BiYAMFollower(Robot):
         target_action = {key: float(value) for key, value in zip(YAM_SCALAR_KEYS, target, strict=True)}
         started_at = time.monotonic()
         control_interval_s = 1.0 / self.config.policy_reset_fps
-        logger.info("Moving BiYAM to its configured policy start position")
+        logger.info("Moving BiYAM to its %s", pose_name)
 
         try:
             states = self._refresh_commandable_states()
             start = self._control_positions(states)
             max_error = float(np.max(np.abs(target - start)))
             if max_error <= self.config.policy_reset_tolerance:
-                logger.info("BiYAM is already at its policy start position (max error %.4f)", max_error)
+                logger.info("BiYAM is already at its %s (max error %.4f)", pose_name, max_error)
                 return target_action
 
             trajectory_steps = min(
@@ -284,7 +302,7 @@ class BiYAMFollower(Robot):
                 max_error = float(np.max(np.abs(target - present)))
                 if time.monotonic() - started_at >= self.config.policy_reset_timeout_s:
                     raise TimeoutError(
-                        "BiYAM did not reach its policy start position within "
+                        f"BiYAM did not reach its {pose_name} within "
                         f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
                     )
                 self._dispatch_positions(waypoint)
@@ -306,11 +324,11 @@ class BiYAMFollower(Robot):
                 present = self._control_positions(states)
                 max_error = float(np.max(np.abs(target - present)))
                 if max_error <= self.config.policy_reset_tolerance:
-                    logger.info("BiYAM reached its policy start position (max error %.4f)", max_error)
+                    logger.info("BiYAM reached its %s (max error %.4f)", pose_name, max_error)
                     return target_action
                 if time.monotonic() - started_at >= self.config.policy_reset_timeout_s:
                     raise TimeoutError(
-                        "BiYAM did not reach its policy start position within "
+                        f"BiYAM did not reach its {pose_name} within "
                         f"{self.config.policy_reset_timeout_s:.1f}s (max error {max_error:.4f})"
                     )
                 self._dispatch_positions(target)

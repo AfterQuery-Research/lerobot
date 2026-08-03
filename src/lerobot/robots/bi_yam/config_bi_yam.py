@@ -30,7 +30,8 @@ YAM_SCALAR_KEYS = (
     "right_gripper.pos",
 )
 
-BI_YAM_POLICY_START_POSITION = (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0)
+BI_YAM_POLICY_END_POSITION = (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0)
+BI_YAM_POLICY_START_POSITION = BI_YAM_POLICY_END_POSITION
 
 
 def _default_joint_limits() -> list[tuple[float, float]]:
