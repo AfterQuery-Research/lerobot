@@ -221,7 +221,6 @@ uv run lerobot-rollout \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
     --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
-    --robot.policy_start_position='[0.0, 0.4, 0.8, 0.0, 0.0, 0.0, 1.0, 0.0, 0.4, 0.8, 0.0, 0.0, 0.0, 1.0]' \
     --robot.max_joint_delta=0.10 \
     --robot.max_gripper_delta=0.03 \
     --robot.cameras="$CAMERAS" \
@@ -255,20 +254,16 @@ including remote chunk timing and control summaries, at `DEBUG` level in
 
 ## Reset and safety behavior
 
-The motion command above sets the reset target to:
+The default reset target is:
 
 ```text
-[0.0, 0.4, 0.8, 0.0, 0.0, 0.0, 1.0,
- 0.0, 0.4, 0.8, 0.0, 0.0, 0.0, 1.0]
+[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]
 ```
 
-The values are the six left-arm joints, left gripper, six right-arm joints, and
-right gripper, in that order. A normalized gripper value of `1.0` means open.
-Omit `--robot.policy_start_position` to use the built-in all-zero arm pose with
-both grippers open. Reset waypoints are at most `0.01` apart at 30 Hz and capped
-at 100 interpolation steps. The client holds the final target, requires every
-value within `0.035`, and idles both arms if the pose is not reached within 30
-seconds.
+This is six zero joint targets and an open gripper for each arm. Reset waypoints
+are at most `0.01` apart at 30 Hz and capped at 100 interpolation steps. The
+client holds the final target, requires every value within `0.035`, and idles
+both arms if the pose is not reached within 30 seconds.
 
 Policy commands use the tested operational joint bounds, per-tick limits of
 `0.10` radians for joints and `0.03` normalized units for grippers, and a
