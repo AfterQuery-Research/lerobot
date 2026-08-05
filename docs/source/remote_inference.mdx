@@ -247,13 +247,16 @@ more coherently but run open-loop for longer. The tested starting value for the
 30 Hz dual-YAM setup is `15`, or 0.5 seconds of committed control.
 
 `--enable_logging=true` creates a UTC-timestamped directory for each invocation
-under `outputs/runs/` containing `rollout.log` and `control.jsonl`. Telemetry
-records requested, bounded, applied, and measured targets, tracking errors, and
-clipped joints. The application log records LeRobot messages, including remote
-chunk timing and control summaries, at `DEBUG` level. Because each run has its
-own directory, neither artifact is mixed with or overwritten by another run.
-Logging defaults to disabled; pass `--logging_dir=<path>` to change the output
-root.
+under `outputs/runs/` containing `rollout.log`, `control.jsonl`, and
+`resolved_config.yaml`. The configuration snapshot is Draccus-compatible and
+includes the complete resolved rollout configuration, including defaults and
+the nested inference, robot, and camera settings used for that invocation.
+Telemetry records requested, bounded, applied, and measured targets, tracking
+errors, and clipped joints. The application log records LeRobot messages,
+including remote chunk timing and control summaries, at `DEBUG` level. Because
+each run has its own directory, its artifacts are not mixed with or overwritten
+by another run. Logging defaults to disabled; pass `--logging_dir=<path>` to
+change the output root.
 
 ## Reset and safety behavior
 

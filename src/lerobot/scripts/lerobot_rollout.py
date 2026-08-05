@@ -156,6 +156,8 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+import draccus
+
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.cameras.zmq import ZMQCameraConfig  # noqa: F401
@@ -227,7 +229,11 @@ def _configure_rollout_logging(cfg: RolloutConfig, *, timestamp: str | None = No
 
     init_logging(log_file=log_file)
     if run_dir is not None:
+        config_path = run_dir / "resolved_config.yaml"
+        with config_path.open("w", encoding="utf-8") as config_file:
+            draccus.dump(cfg, config_file, omit_defaults=False)
         logger.info("Writing rollout artifacts to %s", run_dir)
+        logger.info("Wrote resolved rollout configuration to %s", config_path)
     return run_dir
 
 

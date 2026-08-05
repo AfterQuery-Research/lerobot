@@ -122,19 +122,57 @@ def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
 
 
 def test_rollout_logging_creates_shared_timestamped_artifact_directory(tmp_path, monkeypatch):
-    import lerobot.scripts.lerobot_rollout as rollout_script
+    import draccus
 
-    robot = SimpleNamespace(control_telemetry_path=None)
-    cfg = SimpleNamespace(enable_logging=True, logging_dir=tmp_path, robot=robot)
+    import lerobot.scripts.lerobot_rollout as rollout_script
+    from lerobot.robots.bi_yam.config_bi_yam import BiYAMFollowerConfig, YAMArmConfig
+    from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
+
+    robot = BiYAMFollowerConfig(
+        id="test-dual-yam",
+        left_arm_config=YAMArmConfig(sim=True),
+        right_arm_config=YAMArmConfig(sim=True),
+        max_joint_delta=0.15,
+        max_gripper_delta=0.05,
+    )
+    cfg = RolloutConfig(
+        robot=robot,
+        inference=RemoteInferenceConfig(
+            server_address="policy-server.local:8081",
+            requested_model_id="test/model",
+            execution_horizon=16,
+        ),
+        enable_logging=True,
+        logging_dir=tmp_path,
+        fps=20,
+        duration=90,
+        task="Put all oranges in the bowl",
+    )
     configured = []
     monkeypatch.setattr(rollout_script, "init_logging", lambda *, log_file: configured.append(log_file))
 
     run_dir = rollout_script._configure_rollout_logging(cfg, timestamp="20260805T010203Z")
+    config_path = run_dir / "resolved_config.yaml"
+    resolved = draccus.parse(RolloutConfig, config_path, args=[])
 
     assert run_dir == tmp_path / "20260805T010203Z"
     assert run_dir.is_dir()
     assert configured == [run_dir / "rollout.log"]
     assert robot.control_telemetry_path == run_dir / "control.jsonl"
+    assert resolved.enable_logging is True
+    assert resolved.logging_dir == tmp_path
+    assert resolved.fps == 20
+    assert resolved.duration == 90
+    assert resolved.task == "Put all oranges in the bowl"
+    assert resolved.inference.type == "remote"
+    assert resolved.inference.server_address == "policy-server.local:8081"
+    assert resolved.inference.requested_model_id == "test/model"
+    assert resolved.inference.execution_horizon == 16
+    assert resolved.robot.type == "bi_yam_follower"
+    assert resolved.robot.id == "test-dual-yam"
+    assert resolved.robot.max_joint_delta == 0.15
+    assert resolved.robot.max_gripper_delta == 0.05
+    assert resolved.robot.control_telemetry_path == run_dir / "control.jsonl"
 
 
 def test_rollout_logging_can_be_disabled(tmp_path, monkeypatch):
