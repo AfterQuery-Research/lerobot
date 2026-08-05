@@ -165,7 +165,7 @@ class LeRobotPolicyBackend(PolicyBackend):
             self._policy = policy_class(self._policy_config)
         else:
             self._policy = policy_class.from_pretrained(
-                self._policy_config.pretrained_path,
+                config.pretrained_name_or_path,
                 config=self._policy_config,
                 revision=self._policy_config.pretrained_revision,
             )
