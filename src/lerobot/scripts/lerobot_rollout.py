@@ -153,6 +153,7 @@ Usage examples
 """
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
@@ -203,19 +204,37 @@ from lerobot.utils.visualization_utils import init_visualization, shutdown_visua
 logger = logging.getLogger(__name__)
 
 
-def _configure_rollout_logging(log_file: Path | None) -> None:
-    if log_file is not None:
-        log_file = log_file.expanduser()
-        log_file.parent.mkdir(parents=True, exist_ok=True)
+def _configure_rollout_logging(cfg: RolloutConfig, *, timestamp: str | None = None) -> Path | None:
+    run_dir = None
+    log_file = None
+    if cfg.enable_logging:
+        timestamp = timestamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        logging_root = cfg.logging_dir.expanduser()
+        logging_root.mkdir(parents=True, exist_ok=True)
+        run_dir = logging_root / timestamp
+        suffix = 1
+        while True:
+            try:
+                run_dir.mkdir()
+                break
+            except FileExistsError:
+                run_dir = logging_root / f"{timestamp}-{suffix}"
+                suffix += 1
+
+        log_file = run_dir / "rollout.log"
+        if cfg.robot is not None and hasattr(cfg.robot, "control_telemetry_path"):
+            cfg.robot.control_telemetry_path = run_dir / "control.jsonl"
+
     init_logging(log_file=log_file)
-    if log_file is not None:
-        logger.info("Writing rollout application logs to %s", log_file)
+    if run_dir is not None:
+        logger.info("Writing rollout artifacts to %s", run_dir)
+    return run_dir
 
 
 @parser.wrap()
 def rollout(cfg: RolloutConfig):
     """Main entry point for policy deployment."""
-    _configure_rollout_logging(cfg.log_file)
+    _configure_rollout_logging(cfg)
 
     if cfg.display_data:
         logger.info(

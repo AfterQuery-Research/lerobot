@@ -212,7 +212,7 @@ method ready:
 ```bash
 uv run lerobot-rollout \
     --strategy.type=base \
-    --log_file=logs/yam-rollout.log \
+    --enable_logging=true \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
@@ -224,7 +224,6 @@ uv run lerobot-rollout \
     --robot.max_joint_delta=0.10 \
     --robot.max_gripper_delta=0.03 \
     --robot.cameras="$CAMERAS" \
-    --robot.control_telemetry_path=outputs/yam-control.jsonl \
     --task="Pick up the oranges and put them in the bowl" \
     --display_data="$DISPLAY_DATA" \
     --display_mode="$DISPLAY_MODE" \
@@ -247,10 +246,14 @@ between inconsistent trajectories more often. Longer horizons preserve motion
 more coherently but run open-loop for longer. The tested starting value for the
 30 Hz dual-YAM setup is `15`, or 0.5 seconds of committed control.
 
-Telemetry records requested, bounded, applied, and measured targets, tracking
-errors, and clipped joints. The application log records LeRobot messages,
-including remote chunk timing and control summaries, at `DEBUG` level in
-`logs/yam-rollout.log`. The file is appended across runs.
+`--enable_logging=true` creates a UTC-timestamped directory for each invocation
+under `outputs/runs/` containing `rollout.log` and `control.jsonl`. Telemetry
+records requested, bounded, applied, and measured targets, tracking errors, and
+clipped joints. The application log records LeRobot messages, including remote
+chunk timing and control summaries, at `DEBUG` level. Because each run has its
+own directory, neither artifact is mixed with or overwritten by another run.
+Logging defaults to disabled; pass `--logging_dir=<path>` to change the output
+root.
 
 ## Reset and safety behavior
 

@@ -259,8 +259,9 @@ class RolloutConfig:
     interpolation_multiplier: int = 1
     device: str | None = None
     task: str = ""
-    # Optional Python application log. The rollout entry point creates its parent directory.
-    log_file: Path | None = None
+    # Persist application logs and supported robot telemetry under one timestamped directory.
+    enable_logging: bool = False
+    logging_dir: Path = Path("outputs/runs")
     display_data: bool = False
     # Visualization backend used when display_data is True: "rerun", "foxglove", or "local".
     display_mode: str = "rerun"

@@ -121,17 +121,56 @@ def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
     assert cfg.display_data is False
 
 
-def test_rollout_log_file_creates_parent_and_configures_file_logging(tmp_path, monkeypatch):
+def test_rollout_logging_creates_shared_timestamped_artifact_directory(tmp_path, monkeypatch):
     import lerobot.scripts.lerobot_rollout as rollout_script
 
-    log_file = tmp_path / "nested" / "rollout.log"
+    robot = SimpleNamespace(control_telemetry_path=None)
+    cfg = SimpleNamespace(enable_logging=True, logging_dir=tmp_path, robot=robot)
     configured = []
     monkeypatch.setattr(rollout_script, "init_logging", lambda *, log_file: configured.append(log_file))
 
-    rollout_script._configure_rollout_logging(log_file)
+    run_dir = rollout_script._configure_rollout_logging(cfg, timestamp="20260805T010203Z")
 
-    assert log_file.parent.is_dir()
-    assert configured == [log_file]
+    assert run_dir == tmp_path / "20260805T010203Z"
+    assert run_dir.is_dir()
+    assert configured == [run_dir / "rollout.log"]
+    assert robot.control_telemetry_path == run_dir / "control.jsonl"
+
+
+def test_rollout_logging_can_be_disabled(tmp_path, monkeypatch):
+    import lerobot.scripts.lerobot_rollout as rollout_script
+
+    robot = SimpleNamespace(control_telemetry_path=None)
+    cfg = SimpleNamespace(enable_logging=False, logging_dir=tmp_path, robot=robot)
+    configured = []
+    monkeypatch.setattr(rollout_script, "init_logging", lambda *, log_file: configured.append(log_file))
+
+    run_dir = rollout_script._configure_rollout_logging(cfg, timestamp="unused")
+
+    assert run_dir is None
+    assert configured == [None]
+    assert robot.control_telemetry_path is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_rollout_logging_flags_parse_with_draccus(tmp_path, monkeypatch):
+    import draccus
+
+    from lerobot.rollout import RolloutConfig
+    from tests.mocks.mock_robot import MockRobotConfig  # noqa: F401
+
+    args = [
+        "--robot.type=mock_robot",
+        "--inference.type=remote",
+        "--enable_logging=true",
+        f"--logging_dir={tmp_path}",
+    ]
+    monkeypatch.setattr(sys, "argv", ["lerobot-rollout", *args])
+
+    cfg = draccus.parse(RolloutConfig, args=args)
+
+    assert cfg.enable_logging is True
+    assert cfg.logging_dir == tmp_path
 
 
 def test_rollout_logs_unexpected_failure_and_tears_down(monkeypatch, caplog):
@@ -143,7 +182,6 @@ def test_rollout_logs_unexpected_failure_and_tears_down(monkeypatch, caplog):
     strategy = MagicMock()
     strategy.run.side_effect = RuntimeError("synthetic rollout failure")
     cfg = SimpleNamespace(
-        log_file=None,
         display_data=False,
         dataset=None,
         task="test",
@@ -152,7 +190,7 @@ def test_rollout_logs_unexpected_failure_and_tears_down(monkeypatch, caplog):
         fps=30.0,
         duration=1.0,
     )
-    monkeypatch.setattr(rollout_script, "_configure_rollout_logging", lambda log_file: None)
+    monkeypatch.setattr(rollout_script, "_configure_rollout_logging", lambda cfg: None)
     monkeypatch.setattr(
         rollout_script,
         "ProcessSignalHandler",
