@@ -254,6 +254,9 @@ def rollout(cfg: RolloutConfig):
         strategy.run(ctx)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except Exception:
+        logger.exception("Rollout failed")
+        raise
     finally:
         strategy.teardown(ctx)
         if cfg.display_data:

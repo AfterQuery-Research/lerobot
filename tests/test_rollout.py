@@ -134,6 +134,44 @@ def test_rollout_log_file_creates_parent_and_configures_file_logging(tmp_path, m
     assert configured == [log_file]
 
 
+def test_rollout_logs_unexpected_failure_and_tears_down(monkeypatch, caplog):
+    import logging
+
+    import lerobot.scripts.lerobot_rollout as rollout_script
+
+    ctx = object()
+    strategy = MagicMock()
+    strategy.run.side_effect = RuntimeError("synthetic rollout failure")
+    cfg = SimpleNamespace(
+        log_file=None,
+        display_data=False,
+        dataset=None,
+        task="test",
+        strategy=SimpleNamespace(type="base"),
+        robot=SimpleNamespace(type="mock"),
+        fps=30.0,
+        duration=1.0,
+    )
+    monkeypatch.setattr(rollout_script, "_configure_rollout_logging", lambda log_file: None)
+    monkeypatch.setattr(
+        rollout_script,
+        "ProcessSignalHandler",
+        lambda **kwargs: SimpleNamespace(shutdown_event=object()),
+    )
+    monkeypatch.setattr(rollout_script, "build_rollout_context", lambda cfg, shutdown_event: ctx)
+    monkeypatch.setattr(rollout_script, "create_strategy", lambda strategy_cfg: strategy)
+
+    with (
+        caplog.at_level(logging.ERROR, logger=rollout_script.__name__),
+        pytest.raises(RuntimeError, match="synthetic rollout failure"),
+    ):
+        rollout_script.rollout.__wrapped__(cfg)
+
+    assert "Rollout failed" in caplog.text
+    assert "RuntimeError: synthetic rollout failure" in caplog.text
+    strategy.teardown.assert_called_once_with(ctx)
+
+
 def test_remote_rollout_config_rejects_local_policy_path(monkeypatch):
     from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
     from tests.mocks.mock_robot import MockRobotConfig
