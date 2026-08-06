@@ -84,7 +84,7 @@ class _SavedStateStats:
         return {f"{OBS_STATE}.q01": torch.zeros(self.state_dim)}
 
 
-def _pi05_backend(rename_map: dict[str, str]) -> LeRobotPolicyBackend:
+def _pi05_backend(rename_map: dict[str, str], *, model_state_dim: int = 32) -> LeRobotPolicyBackend:
     joint_names = [
         *(f"left_joint_{index}.pos" for index in range(6)),
         "left_gripper.pos",
@@ -96,7 +96,7 @@ def _pi05_backend(rename_map: dict[str, str]) -> LeRobotPolicyBackend:
     backend._policy_config = SimpleNamespace(
         type="pi05",
         input_features={
-            OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(32,)),
+            OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(model_state_dim,)),
             "observation.images.base_0_rgb": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 224, 224)),
             "observation.images.left_wrist_0_rgb": PolicyFeature(
                 type=FeatureType.VISUAL, shape=(3, 224, 224)
@@ -148,3 +148,12 @@ def test_pi05_manifest_omits_unmapped_optional_camera():
     manifest = backend._build_manifest()
 
     assert manifest.camera_keys == ("left", "right")
+
+
+def test_non_padded_policy_does_not_reuse_action_names_for_state():
+    backend = _pi05_backend({}, model_state_dim=14)
+
+    manifest = backend._build_manifest()
+
+    assert manifest.state_features == tuple(f"{OBS_STATE}.{index}" for index in range(14))
+    assert manifest.action_features != manifest.state_features

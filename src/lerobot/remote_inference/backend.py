@@ -328,7 +328,10 @@ class LeRobotPolicyBackend(PolicyBackend):
         if names:
             return tuple(names)
         configured = getattr(self._policy_config, "action_feature_names", None)
-        if configured and (key == ACTION or (key == OBS_STATE and len(configured) == fallback_dim)):
+        uses_padded_state = (
+            key == OBS_STATE and int(self._policy_config.input_features[OBS_STATE].shape[-1]) != fallback_dim
+        )
+        if configured and (key == ACTION or (uses_padded_state and len(configured) == fallback_dim)):
             return tuple(configured)
         return tuple(f"{key}.{index}" for index in range(fallback_dim))
 
