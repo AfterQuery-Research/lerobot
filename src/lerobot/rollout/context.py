@@ -477,15 +477,20 @@ def build_rollout_context(
 
     if not is_remote:
         assert policy_config is not None
+        preprocessor_overrides = {"device_processor": {"device": cfg.device}}
+        # Only override the rename step when the user actually passed a map: step
+        # overrides merge as {**saved_cfg, **override}, so an empty default
+        # rename_map would CLOBBER a checkpoint-shipped rename map (e.g. pi05
+        # fine-tunes mapping top/left/right onto base_0_rgb/*_wrist_0_rgb slots)
+        # and the policy would then see no image features at all.
+        if cfg.rename_map:
+            preprocessor_overrides["rename_observations_processor"] = {"rename_map": cfg.rename_map}
         preprocessor, postprocessor = make_pre_post_processors(
             policy_cfg=policy_config,
             pretrained_path=policy_config.pretrained_path,
             pretrained_revision=policy_config.pretrained_revision,
             dataset_stats=dataset_stats,
-            preprocessor_overrides={
-                "device_processor": {"device": cfg.device},
-                "rename_observations_processor": {"rename_map": cfg.rename_map},
-            },
+            preprocessor_overrides=preprocessor_overrides,
         )
 
         if isinstance(cfg.inference, SyncInferenceConfig) and any(
