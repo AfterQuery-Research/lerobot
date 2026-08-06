@@ -24,10 +24,14 @@ Install `uv`, then reopen the shell or source the environment file created by
 the installer. The commands below use `--locked`, so installation fails instead
 of modifying `uv.lock` when project metadata and the checked-in lock disagree.
 
-On the policy server:
+On the policy server, install the extra for the policy family you will serve:
 
 ```bash
+# MolmoAct2
 uv sync --locked --extra remote --extra molmoact2
+
+# Pi0 / Pi0.5
+uv sync --locked --extra remote --extra pi
 ```
 
 On the dual-YAM computer:
@@ -43,7 +47,7 @@ the client installation selects ARM64 RealSense and CPU-only PyTorch wheels.
 
 ## Start the server
 
-Run this on the GPU machine:
+For MolmoAct2, run this on the GPU machine:
 
 ```bash
 uv run lerobot-policy-server \
@@ -56,6 +60,24 @@ uv run lerobot-policy-server \
     --host=0.0.0.0 \
     --port=8081
 ```
+
+For a saved Pi0.5 LeRobot checkpoint, the checkpoint already contains its
+policy configuration, normalization statistics, and observation rename map:
+
+```bash
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path=ASethi04/pi05-BimanualYAM-oranges-uw-notop \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
+Use the same checkpoint ID in the client's
+`--inference.requested_model_id`. The no-top checkpoint requires only the
+logical `left` and `right` camera views; Pi0.5 masks its unused base-camera
+slot internally.
+For motion tests with this checkpoint, use
+`--robot.max_gripper_delta=0.05`; keep the documented joint limit at `0.10`.
 
 Wait until the model has loaded and the server is listening. For a repeatable
 deployment, also pass `--policy.revision=<commit-sha>`.
@@ -134,8 +156,8 @@ whose `Id` is `/dev/video2` in the command output, then use that block's complet
 streams belonging to a connected RealSense camera; configure the RealSense by
 serial using the RealSense results instead.
 
-Camera order is part of the MolmoAct2 contract and must remain `top`, `left`,
-`right`.
+Camera order is part of the model contract. Three-camera checkpoints use
+`top`, `left`, `right`; no-top checkpoints use `left`, `right`.
 
 ## Set client values
 
@@ -144,6 +166,8 @@ installation once per shell on the robot computer:
 
 ```bash
 SERVER=<reachable-server-ip>:8081
+MODEL_ID=<served-checkpoint-id>
+TASK=<checkpoint-task>
 ROBOT_ID=<robot-id>
 LEFT_CAN=<left-can-adapter-serial>
 RIGHT_CAN=<right-can-adapter-serial>
@@ -182,11 +206,26 @@ CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', widt
 The ultrawides were validated at `1280x720`, 30 FPS, using MJPEG. They do not
 offer the previous RealSense side-camera profile of `640x360`.
 
+### Two OpenCV sides (no-top checkpoint)
+
+For a checkpoint trained without a top view, configure only the two complete
+OpenCV stable paths:
+
+```bash
+LEFT_CAMERA=<left-opencv-stable-path>
+RIGHT_CAMERA=<right-opencv-stable-path>
+
+CAMERAS="{left: {type: opencv, index_or_path: '$LEFT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}, right: {type: opencv, index_or_path: '$RIGHT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
+```
+
 `SERVER` is the policy-server address reachable from the robot computer.
+`MODEL_ID` must exactly match the server's `--policy.pretrained_name_or_path`.
+Use the checkpoint's training instruction for `TASK`; for the Pi0.5 oranges
+checkpoints above, use `TASK="Put all oranges in the bowl"`.
 `ROBOT_ID` is a stable name chosen for this physical robot; it selects the
 robot's local calibration file. Use the same ID every time on that robot.
 `DISPLAY_DATA=false` keeps the local camera preview disabled by default. Set it
-to `true` from the Pi desktop when a three-camera preview is needed;
+to `true` from the robot desktop when a camera preview is needed;
 `DISPLAY_MODE=local` selects that local preview window.
 
 ### Configure CAN
@@ -250,20 +289,20 @@ uv run lerobot-rollout \
     --strategy.action_log_path=outputs/yam-policy-actions.jsonl \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
-    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --inference.requested_model_id="$MODEL_ID" \
     --inference.execution_horizon=15 \
     --robot.type=bi_yam_follower \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
     --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
     --robot.cameras="$CAMERAS" \
-    --task="Pick up the oranges and put them in the bowl" \
+    --task="$TASK" \
     --fps=30 \
     --duration=10
 ```
 
-This mode reads live joint and gripper state, captures all three real cameras,
-sends observations to the real policy server, and validates returned actions.
+This mode reads live joint and gripper state, captures the configured real
+cameras, sends observations to the real policy server, and validates returned actions.
 The robot stays in safe idle: probe mode does not arm, reset, return to a pose,
 or call `robot.send_action`. Every returned target is written to
 `outputs/yam-policy-actions.jsonl` with `executed: false`.
@@ -283,7 +322,7 @@ uv run lerobot-rollout \
     --enable_logging=true \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
-    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --inference.requested_model_id="$MODEL_ID" \
     --inference.execution_horizon=15 \
     --robot.type=bi_yam_follower \
     --robot.id="$ROBOT_ID" \
@@ -292,7 +331,7 @@ uv run lerobot-rollout \
     --robot.max_joint_delta=0.10 \
     --robot.max_gripper_delta=0.03 \
     --robot.cameras="$CAMERAS" \
-    --task="Pick up the oranges and put them in the bowl" \
+    --task="$TASK" \
     --display_data="$DISPLAY_DATA" \
     --display_mode="$DISPLAY_MODE" \
     --fps=30 \
