@@ -76,7 +76,9 @@ connect one adapter at a time, trace its cable to the left or right arm, and
 label the adapter or cable. The serial remains stable if Linux later assigns a
 different `canN` name.
 
-### Find camera serials
+### Find camera identifiers
+
+#### RealSense cameras
 
 Discover the connected RealSense cameras and capture a preview from each one:
 
@@ -94,6 +96,30 @@ outputs/captured_images/realsense_<serial-number>.png
 Inspect the images to identify the `top`, `left`, and `right` views. If a view
 is still ambiguous, connect one camera at a time and rerun the command. Camera
 order is part of the MolmoAct2 contract and must remain `top`, `left`, `right`.
+
+#### UVC/OpenCV cameras
+
+Generic USB cameras, including the tested global-shutter ultrawide cameras, use
+LeRobot's OpenCV camera backend:
+
+```bash
+uv run lerobot-find-cameras opencv
+```
+
+The command saves previews such as
+`outputs/captured_images/opencv__dev_video0.png`. Match each preview's
+`/dev/videoN` identifier to the `Stable path` printed by the command. Use the
+stable path in the rollout configuration, for example:
+
+```text
+/dev/v4l/by-path/pci-...-video-index0
+```
+
+Do not rely on `/dev/videoN`; those numbers can change after a reboot or
+replug. A `by-path` identifier remains stable while the camera uses the same
+physical USB port. Rediscover the paths after moving cameras between ports.
+This is especially important when multiple cameras advertise the same serial
+number.
 
 ## Set client values
 
@@ -113,6 +139,17 @@ DISPLAY_MODE=local
 
 CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: '$LEFT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: '$RIGHT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}"
 ```
+
+For a RealSense top camera and two UVC ultrawide side cameras, set
+`TOP_CAMERA` to the RealSense serial and set `LEFT_CAMERA` and `RIGHT_CAMERA`
+to their `/dev/v4l/by-path/...-video-index0` identifiers, then use:
+
+```bash
+CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: opencv, index_or_path: '$LEFT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}, right: {type: opencv, index_or_path: '$RIGHT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
+```
+
+The ultrawides were validated at `1280x720`, 30 FPS, using MJPEG. They do not
+offer the previous RealSense side-camera profile of `640x360`.
 
 `SERVER` is the policy-server address reachable from the robot computer.
 `ROBOT_ID` is a stable name chosen for this physical robot; it selects the
