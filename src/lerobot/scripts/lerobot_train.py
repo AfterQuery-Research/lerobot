@@ -382,6 +382,12 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 "action_names": getattr(active_cfg, "action_feature_names", None),
             }
             postprocessor_overrides["absolute_actions_processor"] = {"enabled": True}
+        # MolmoAct2's processor pipeline has no generic normalizer/unnormalizer steps
+        # (it uses molmoact2_masked_normalizer instead); passing these overrides raises
+        # KeyError on resume (upstream issue #3998). Drop the inapplicable keys.
+        if cfg.policy is not None and getattr(cfg.policy, "type", None) == "molmoact2":
+            preprocessor_overrides.pop("normalizer_processor", None)
+            postprocessor_overrides.pop("unnormalizer_processor", None)
         processor_kwargs["preprocessor_overrides"] = preprocessor_overrides
         processor_kwargs["postprocessor_overrides"] = postprocessor_overrides
 
