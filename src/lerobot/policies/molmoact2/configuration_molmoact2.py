@@ -89,7 +89,12 @@ class MolmoAct2Config(PreTrainedConfig):
     joint_offsets: list[float] | None = None
 
     # Controls only the VLM side. The action expert is always fully fine-tuned.
-    train_mode_vlm: str = "lora"
+    train_mode_vlm: str | None = None
+    # Deprecated checkpoint fields retained so policies saved before train_mode_vlm
+    # can still be loaded. New configurations should use train_mode_vlm.
+    enable_lora_vlm: bool | None = None
+    enable_lora_action_expert: bool | None = None
+    train_action_expert_only: bool | None = None
     lora_rank: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.05
@@ -131,6 +136,23 @@ class MolmoAct2Config(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        legacy_train_mode: str | None = None
+        if self.train_action_expert_only:
+            legacy_train_mode = "freeze"
+        elif self.enable_lora_vlm is not None:
+            legacy_train_mode = "lora" if self.enable_lora_vlm else "fft"
+        if self.enable_lora_action_expert:
+            raise ValueError(
+                "Deprecated enable_lora_action_expert=True is not supported; "
+                "the action expert is now always fully fine-tuned."
+            )
+        if self.train_mode_vlm is None:
+            self.train_mode_vlm = legacy_train_mode or "lora"
+        elif legacy_train_mode is not None and self.train_mode_vlm != legacy_train_mode:
+            raise ValueError(
+                "Conflicting MolmoAct2 VLM training modes: "
+                f"train_mode_vlm={self.train_mode_vlm!r}, legacy mode={legacy_train_mode!r}."
+            )
         if (self.joint_signs is None) != (self.joint_offsets is None):
             raise ValueError("joint_signs and joint_offsets must both be set or both be None.")
         if self.joint_signs is not None and len(self.joint_signs) != len(self.joint_offsets):

@@ -530,6 +530,34 @@ def test_train_mode_vlm_rejects_unknown_value():
         MolmoAct2Config(train_mode_vlm="frozen")
 
 
+@pytest.mark.parametrize(
+    ("legacy_kwargs", "expected_mode"),
+    [
+        ({"enable_lora_vlm": True}, "lora"),
+        ({"enable_lora_vlm": False}, "fft"),
+        ({"train_action_expert_only": True, "action_mode": "continuous"}, "freeze"),
+    ],
+)
+def test_legacy_vlm_training_fields_map_to_train_mode(legacy_kwargs, expected_mode):
+    cfg = MolmoAct2Config(**legacy_kwargs)
+    assert cfg.train_mode_vlm == expected_mode
+
+
+def test_null_legacy_vlm_training_fields_do_not_override_train_mode():
+    cfg = MolmoAct2Config(
+        train_mode_vlm="lora",
+        enable_lora_vlm=None,
+        enable_lora_action_expert=None,
+        train_action_expert_only=None,
+    )
+    assert cfg.train_mode_vlm == "lora"
+
+
+def test_conflicting_legacy_vlm_training_fields_are_rejected():
+    with pytest.raises(ValueError, match="Conflicting MolmoAct2 VLM training modes"):
+        MolmoAct2Config(train_mode_vlm="fft", enable_lora_vlm=True)
+
+
 def test_molmoact2_sequence_length_is_inferred_from_fixed_token_budget():
     assert (
         infer_molmoact2_max_sequence_length(
