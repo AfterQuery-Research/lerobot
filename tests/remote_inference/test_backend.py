@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from lerobot.configs import FeatureType
+import torch
+
+from lerobot.configs import FeatureType, PolicyFeature
 from lerobot.policies.molmoact2.configuration_molmoact2 import MolmoAct2Config
+from lerobot.processor.rename_processor import RenameObservationsProcessorStep
 from lerobot.remote_inference import backend as backend_module
 from lerobot.remote_inference.backend import LeRobotPolicyBackend, LeRobotPolicyBackendConfig
 from lerobot.utils.constants import ACTION, OBS_STATE
@@ -71,3 +74,77 @@ def test_saved_policy_loads_from_backend_path(monkeypatch, tmp_path):
     LeRobotPolicyBackend(LeRobotPolicyBackendConfig(pretrained_name_or_path=str(checkpoint), device="cpu"))
 
     assert loaded["path"] == str(checkpoint)
+
+
+class _SavedStateStats:
+    def __init__(self, state_dim: int):
+        self.state_dim = state_dim
+
+    def state_dict(self):
+        return {f"{OBS_STATE}.q01": torch.zeros(self.state_dim)}
+
+
+def _pi05_backend(rename_map: dict[str, str]) -> LeRobotPolicyBackend:
+    joint_names = [
+        *(f"left_joint_{index}.pos" for index in range(6)),
+        "left_gripper.pos",
+        *(f"right_joint_{index}.pos" for index in range(6)),
+        "right_gripper.pos",
+    ]
+    backend = LeRobotPolicyBackend.__new__(LeRobotPolicyBackend)
+    backend._config = LeRobotPolicyBackendConfig(pretrained_name_or_path="test/pi05-yam", device="cpu")
+    backend._policy_config = SimpleNamespace(
+        type="pi05",
+        input_features={
+            OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(32,)),
+            "observation.images.base_0_rgb": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 224, 224)),
+            "observation.images.left_wrist_0_rgb": PolicyFeature(
+                type=FeatureType.VISUAL, shape=(3, 224, 224)
+            ),
+            "observation.images.right_wrist_0_rgb": PolicyFeature(
+                type=FeatureType.VISUAL, shape=(3, 224, 224)
+            ),
+        },
+        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(14,))},
+        dataset_feature_names=None,
+        action_feature_names=joint_names,
+        n_action_steps=30,
+        chunk_size=30,
+        norm_tag=None,
+    )
+    backend._preprocessor = SimpleNamespace(
+        steps=[RenameObservationsProcessorStep(rename_map=rename_map), _SavedStateStats(14)]
+    )
+    return backend
+
+
+def test_pi05_manifest_uses_raw_processor_state_and_camera_contract():
+    backend = _pi05_backend(
+        {
+            "observation.images.top": "observation.images.base_0_rgb",
+            "observation.images.left": "observation.images.left_wrist_0_rgb",
+            "observation.images.right": "observation.images.right_wrist_0_rgb",
+        }
+    )
+
+    manifest = backend._build_manifest()
+
+    assert len(manifest.state_features) == 14
+    assert manifest.state_features == manifest.action_features
+    assert manifest.action_dim == 14
+    assert manifest.action_horizon == 30
+    assert manifest.camera_keys == ("top", "left", "right")
+    assert backend._configured_image_size("top") == (224, 224)
+
+
+def test_pi05_manifest_omits_unmapped_optional_camera():
+    backend = _pi05_backend(
+        {
+            "observation.images.left": "observation.images.left_wrist_0_rgb",
+            "observation.images.right": "observation.images.right_wrist_0_rgb",
+        }
+    )
+
+    manifest = backend._build_manifest()
+
+    assert manifest.camera_keys == ("left", "right")
