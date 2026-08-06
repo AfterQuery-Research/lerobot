@@ -185,6 +185,13 @@ class LeRobotPolicyBackend(PolicyBackend):
                 config.pretrained_name_or_path,
                 revision=config.revision,
             )
+            # Serve the checkpoint that was actually requested: the checkpoint's own
+            # config.json may carry a stale pretrained_path (its original base model,
+            # e.g. lerobot/pi05_base, or a dead cluster path from a resumed run) and
+            # from_pretrained at construction time would silently load THOSE weights
+            # while using this checkpoint's processors.
+            policy_config.pretrained_path = config.pretrained_name_or_path
+            policy_config.pretrained_revision = config.revision
         elif config.policy_type == "molmoact2":
             from lerobot.policies.molmoact2.configuration_molmoact2 import MolmoAct2Config
 
@@ -321,7 +328,15 @@ class LeRobotPolicyBackend(PolicyBackend):
         names = metadata.get(key)
         if names:
             return tuple(names)
-        configured = getattr(self._policy_config, "action_feature_names", None) if key == ACTION else None
+        # Policies without dataset_feature_names (e.g. pi05) still carry the robot's
+        # real feature names in action_feature_names; state names match action names
+        # on position-controlled robots, and the padded input_features dim (pi05 pads
+        # state to max_state_dim=32) is NOT the wire dim the client speaks.
+        configured = (
+            getattr(self._policy_config, "action_feature_names", None)
+            if key in (ACTION, OBS_STATE)
+            else None
+        )
         if configured:
             return tuple(configured)
         return tuple(f"{key}.{index}" for index in range(fallback_dim))
@@ -335,11 +350,31 @@ class LeRobotPolicyBackend(PolicyBackend):
         action_dim = int(action_feature.shape[-1])
         state_features = self._feature_names(OBS_STATE, state_dim)
         action_features = self._feature_names(ACTION, action_dim)
+        if len(state_features) != state_dim:
+            # Named features win over a padded config dim (pi05 declares state [32]
+            # but the robot wire format and the saved normalizer stats are 14-D);
+            # warmup and the session handshake must use the real dimension.
+            state_dim = len(state_features)
         if len(state_features) != state_dim or len(action_features) != action_dim:
             raise ValueError("policy feature metadata does not match its declared dimensions")
         configured_images = getattr(self._policy_config, "image_keys", None) or tuple(
             self._policy_config.image_features
         )
+        # Advertise PHYSICAL camera names: the checkpoint's saved preprocessor renames
+        # client keys (e.g. top/left/right) onto model slots (base_0_rgb/...), so the
+        # manifest must list the pre-rename names the client actually has. Slots with
+        # no mapping (e.g. a wrist-only fine-tune leaving base_0_rgb unmapped) are
+        # natively masked by the model and must not be demanded from the client.
+        rename_inverse: dict[str, str] = {}
+        for step in getattr(self._preprocessor, "steps", []) or []:
+            rename_map = getattr(step, "rename_map", None)
+            if rename_map:
+                rename_inverse = {v: k for k, v in rename_map.items()}
+                break
+        if rename_inverse:
+            configured_images = tuple(
+                rename_inverse[key] for key in configured_images if key in rename_inverse
+            )
         camera_keys = tuple(key.removeprefix("observation.images.") for key in configured_images)
         horizon = int(
             getattr(
