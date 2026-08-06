@@ -173,6 +173,16 @@ class TrainPipelineConfig(HubMixin):
             )
             self.reward_model.pretrained_path = str(Path(reward_model_path))
         elif policy_path:
+            if self.resume:
+                raise ValueError(
+                    "--policy.path cannot be combined with --resume=true: the resume "
+                    "checkpoint named by --config_path supplies the policy config AND "
+                    "weights. Passing both makes this branch shadow the resume branch, "
+                    "so checkpoint_path is never set (load_training_state crashes with "
+                    "a TypeError) after the policy weights were silently re-loaded "
+                    "from the ORIGINAL base checkpoint instead of the run's latest. "
+                    "Drop --policy.path from the resume invocation."
+                )
             overrides = parser.get_yaml_overrides("policy") + (parser.get_cli_overrides("policy") or [])
             self.policy = PreTrainedConfig.from_pretrained(policy_path, cli_overrides=overrides)
             self.policy.pretrained_path = Path(policy_path)
