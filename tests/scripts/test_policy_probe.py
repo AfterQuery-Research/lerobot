@@ -72,7 +72,7 @@ class FakeClient:
             action_dim=14,
             state_features=probe_module.YAM_FEATURES,
             action_features=probe_module.YAM_FEATURES,
-            camera_keys=probe_module.YAM_CAMERA_KEYS,
+            camera_keys=tuple(camera.key for camera in embodiment.cameras),
             fingerprint="fake-fingerprint",
         )
         model.assert_compatible(embodiment)
@@ -157,7 +157,36 @@ def test_probe_requires_runtime_camera_configuration(tmp_path):
     cfg = _config(tmp_path)
     cfg.cameras = {}
 
-    with pytest.raises(ValueError, match="top, left, right"):
+    with pytest.raises(ValueError, match="at least one camera"):
+        probe_module.run_policy_probe(cfg, camera_factory=lambda _configs: {}, client_factory=FakeClient)
+
+
+def test_probe_accepts_wrist_only_cameras_in_canonical_order(tmp_path):
+    FakeClient.instances.clear()
+    cfg = _config(tmp_path)
+    cfg.cameras = {name: config for name, config in cfg.cameras.items() if name in {"left", "right"}}
+    cameras = {
+        name: FakeCamera(index, height=int(config.height), width=int(config.width))
+        for index, (name, config) in enumerate(cfg.cameras.items())
+    }
+
+    result = probe_module.run_policy_probe(
+        cfg,
+        camera_factory=lambda _configs: cameras,
+        client_factory=FakeClient,
+    )
+
+    assert tuple(frame.key for frame in FakeClient.instances[0].observation.images) == ("left", "right")
+    assert (result.evidence_dir / "left.png").is_file()
+    assert (result.evidence_dir / "right.png").is_file()
+    assert not (result.evidence_dir / "top.png").exists()
+
+
+def test_probe_rejects_noncanonical_camera_order(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.cameras = {"right": cfg.cameras["right"], "left": cfg.cameras["left"]}
+
+    with pytest.raises(ValueError, match="canonical order"):
         probe_module.run_policy_probe(cfg, camera_factory=lambda _configs: {}, client_factory=FakeClient)
 
 

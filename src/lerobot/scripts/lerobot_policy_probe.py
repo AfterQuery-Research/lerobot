@@ -89,8 +89,15 @@ class PolicyProbeConfig:
             raise ValueError("state values must be finite")
         if not self.state_source.strip():
             raise ValueError("state_source must describe where the supplied state came from")
-        if tuple(self.cameras) != YAM_CAMERA_KEYS:
-            raise ValueError("cameras must be ordered as top, left, right")
+        camera_keys = tuple(self.cameras)
+        if not camera_keys:
+            raise ValueError("at least one camera must be configured")
+        unknown_camera_keys = tuple(key for key in camera_keys if key not in YAM_CAMERA_KEYS)
+        if unknown_camera_keys:
+            raise ValueError(f"unsupported YAM camera keys: {unknown_camera_keys}")
+        canonical_camera_keys = tuple(key for key in YAM_CAMERA_KEYS if key in self.cameras)
+        if camera_keys != canonical_camera_keys:
+            raise ValueError("cameras must follow the canonical order: top, left, right")
         if self.connect_timeout_s <= 0 or self.inference_timeout_s <= 0:
             raise ValueError("timeouts must be positive")
         if self.max_message_bytes <= 0 or not 1 <= self.jpeg_quality <= 100:
