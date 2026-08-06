@@ -18,6 +18,7 @@ import inspect
 import json
 from types import SimpleNamespace
 
+import draccus
 import numpy as np
 import pytest
 
@@ -158,6 +159,25 @@ def test_probe_requires_runtime_camera_configuration(tmp_path):
 
     with pytest.raises(ValueError, match="top, left, right"):
         probe_module.run_policy_probe(cfg, camera_factory=lambda _configs: {}, client_factory=FakeClient)
+
+
+def test_probe_cli_decodes_mixed_realsense_and_opencv_cameras():
+    cameras = (
+        "{top: {type: intelrealsense, serial_number_or_name: 'TOP', width: 640, height: 480, "
+        "fps: 30, use_rgb: true, use_depth: false}, left: {type: opencv, "
+        "index_or_path: '/dev/v4l/by-path/left-video-index0', width: 1280, height: 720, "
+        "fps: 30, fourcc: 'MJPG'}, right: {type: opencv, "
+        "index_or_path: '/dev/v4l/by-path/right-video-index0', width: 1280, height: 720, "
+        "fps: 30, fourcc: 'MJPG'}}"
+    )
+
+    cfg = draccus.parse(probe_module.PolicyProbeConfig, args=[f"--cameras={cameras}"])
+
+    assert tuple(cfg.cameras) == ("top", "left", "right")
+    assert cfg.cameras["top"].type == "intelrealsense"
+    assert cfg.cameras["left"].type == "opencv"
+    assert str(cfg.cameras["left"].index_or_path) == "/dev/v4l/by-path/left-video-index0"
+    assert cfg.cameras["right"].fourcc == "MJPG"
 
 
 def test_probe_refuses_missing_or_unlabelled_state_before_camera_creation(tmp_path):

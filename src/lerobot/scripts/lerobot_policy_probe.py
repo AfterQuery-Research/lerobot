@@ -34,6 +34,8 @@ import numpy as np
 from PIL import Image
 
 from lerobot.cameras import Camera, CameraConfig, make_cameras_from_configs
+from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
+from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.remote_inference import (
     CameraSpec,
     EmbodimentManifest,
