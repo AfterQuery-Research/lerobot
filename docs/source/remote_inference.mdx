@@ -222,6 +222,9 @@ uv run lerobot-setup-can \
 ip -details link show type can
 ```
 
+Repeat `lerobot-setup-can` whenever either robot arm's USB-to-CAN adapter is
+unplugged and replugged.
+
 Look for two CAN interfaces in the output. Both should include `UP` and
 `LOWER_UP`, report `state UP`, show `can state ERROR-ACTIVE`, and use
 `bitrate 1000000`. `ERROR-ACTIVE` is the normal healthy CAN state; it means the
