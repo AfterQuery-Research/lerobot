@@ -306,7 +306,13 @@ class LeRobotPolicyBackend(PolicyBackend):
         logger.info("Policy warmup completed in %.2fs", time.perf_counter() - started)
 
     def _configured_image_size(self, camera_key: str) -> tuple[int, int]:
-        feature = self._policy_config.input_features.get(f"observation.images.{camera_key}")
+        feature_key = f"observation.images.{camera_key}"
+        for step in self._preprocessor.steps:
+            rename_map = getattr(step, "rename_map", None)
+            if rename_map and feature_key in rename_map:
+                feature_key = rename_map[feature_key]
+                break
+        feature = self._policy_config.input_features.get(feature_key)
         shape = tuple(feature.shape) if feature is not None else ()
         if len(shape) == 3 and shape[0] in (1, 3):
             height, width = int(shape[1]), int(shape[2])
@@ -321,26 +327,53 @@ class LeRobotPolicyBackend(PolicyBackend):
         names = metadata.get(key)
         if names:
             return tuple(names)
-        configured = getattr(self._policy_config, "action_feature_names", None) if key == ACTION else None
-        if configured:
+        configured = getattr(self._policy_config, "action_feature_names", None)
+        uses_padded_state = (
+            key == OBS_STATE and int(self._policy_config.input_features[OBS_STATE].shape[-1]) != fallback_dim
+        )
+        if configured and (key == ACTION or (uses_padded_state and len(configured) == fallback_dim)):
             return tuple(configured)
         return tuple(f"{key}.{index}" for index in range(fallback_dim))
+
+    def _processor_feature_dim(self, key: str, fallback_dim: int) -> int:
+        """Return the raw feature width represented by the saved processor state."""
+        for step in self._preprocessor.steps:
+            step_state = step.state_dict()
+            for stat_name in ("q01", "mean", "min", "std"):
+                value = step_state.get(f"{key}.{stat_name}")
+                if value is not None and value.ndim == 1:
+                    return int(value.shape[0])
+        return fallback_dim
+
+    def _external_camera_keys(self) -> tuple[str, ...]:
+        configured_images = tuple(
+            key
+            for key, feature in self._policy_config.input_features.items()
+            if feature.type is FeatureType.VISUAL
+        )
+        for step in self._preprocessor.steps:
+            rename_map = getattr(step, "rename_map", None)
+            if not rename_map:
+                continue
+            source_keys = tuple(
+                source for source, target in rename_map.items() if target in configured_images
+            )
+            if source_keys:
+                return tuple(key.removeprefix("observation.images.") for key in source_keys)
+        return tuple(key.removeprefix("observation.images.") for key in configured_images)
 
     def _build_manifest(self) -> ModelManifest:
         state_feature = self._policy_config.input_features.get(OBS_STATE)
         action_feature = self._policy_config.output_features.get(ACTION)
         if state_feature is None or action_feature is None:
             raise ValueError("policy configuration does not declare state and action features")
-        state_dim = int(state_feature.shape[-1])
+        state_dim = self._processor_feature_dim(OBS_STATE, int(state_feature.shape[-1]))
         action_dim = int(action_feature.shape[-1])
         state_features = self._feature_names(OBS_STATE, state_dim)
         action_features = self._feature_names(ACTION, action_dim)
         if len(state_features) != state_dim or len(action_features) != action_dim:
             raise ValueError("policy feature metadata does not match its declared dimensions")
-        configured_images = getattr(self._policy_config, "image_keys", None) or tuple(
-            self._policy_config.image_features
-        )
-        camera_keys = tuple(key.removeprefix("observation.images.") for key in configured_images)
+        camera_keys = self._external_camera_keys()
         horizon = int(
             getattr(
                 self._policy_config,
