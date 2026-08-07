@@ -67,16 +67,6 @@ uv run lerobot-policy-server \
     --port=8081
 ```
 
-Use the same checkpoint ID in the client's
-`--inference.requested_model_id`. The no-top checkpoint requires only the
-logical `left` and `right` camera views; Pi0.5 masks its unused base-camera
-slot internally.
-For motion tests with this checkpoint, use
-`--robot.max_gripper_delta=0.05`; keep the documented joint limit at `0.10`.
-
-Wait until the model has loaded and the server is listening. For a repeatable
-deployment, also pass `--policy.revision=<commit-sha>`.
-
 ## Discover client hardware
 
 ### Find CAN adapter serials
