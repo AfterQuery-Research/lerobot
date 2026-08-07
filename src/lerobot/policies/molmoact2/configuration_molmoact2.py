@@ -104,6 +104,12 @@ class MolmoAct2Config(PreTrainedConfig):
     gradient_checkpointing: bool = False
 
     model_dtype: str = "bfloat16"
+    # Empirical note (2026-08-06, 80-episode bimanual-YAM LoRA fine-tune): a controlled
+    # A/B (identical 12k-step runs, dropout 0.1 vs 0) found no measurable offline
+    # difference — open-loop action L1 0.0536 vs 0.0519 rad and camera-shuffle
+    # vision-sensitivity 1.48x vs 1.53x at the final checkpoint. An earlier probe that
+    # suggested 0.1 caused vision-blindness did not reproduce (probe artifact: a
+    # batch-size-1 camera-shuffle is a no-op). Keep 0.1 unless robot evals say otherwise.
     llm_residual_dropout: float = 0.1
     softmax_auxiliary_loss: bool = True
     softmax_auxiliary_loss_scale: float = 1e-4
