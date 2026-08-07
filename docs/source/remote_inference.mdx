@@ -222,10 +222,12 @@ uv run lerobot-setup-can \
 ip -details link show type can
 ```
 
-This performs only `ip link` setup and verification. It does not import i2rt,
-send motor frames, or move the robot. Confirm that both interfaces report `UP`
-before continuing. You do not need to repeat setup before each rollout unless
-the computer rebooted or an adapter was replugged.
+Look for two CAN interfaces in the output. Both should include `UP` and
+`LOWER_UP`, report `state UP`, show `can state ERROR-ACTIVE`, and use
+`bitrate 1000000`. `ERROR-ACTIVE` is the normal healthy CAN state; it means the
+controller has not entered an error-passive or bus-off state. Do not continue
+if either interface is missing, down, `STOPPED`, `ERROR-PASSIVE`, or `BUS-OFF`,
+or if it reports a different bitrate.
 
 ## Calibrate once
 
