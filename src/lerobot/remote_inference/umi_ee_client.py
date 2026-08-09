@@ -39,8 +39,12 @@ observations through the wire and scoring returned chunks against ground truth:
     python -m lerobot.remote_inference.umi_ee_client \
         --server 127.0.0.1:8081 \
         --data_root /path/to/converted-14d-dataset \
+        --repo_id user/dual-lidar-umi \
         --episodes 3 17 41 --stride 60 \
         --task "Put all oranges in the bowl"
+
+fps, camera order/resolution, and feature names all come from the dataset metadata,
+so the harness works for any dataset whose layout matches the served policy.
 """
 
 from __future__ import annotations
@@ -168,6 +172,7 @@ class UmiEeRemoteClient:
 class _ReplayArgs:
     server: str
     data_root: str
+    repo_id: str
     task: str
     episodes: list[int] = field(default_factory=lambda: [3, 17, 41])
     stride: int = 60
@@ -176,74 +181,101 @@ class _ReplayArgs:
     out: str | None = None
 
 
-def _decode_frames(video_path: str, indices: list[int]) -> dict[int, np.ndarray]:
-    import av
-
-    wanted = set(indices)
-    frames: dict[int, np.ndarray] = {}
-    with av.open(video_path) as container:
-        for position, frame in enumerate(container.decode(video=0)):
-            if position in wanted:
-                frames[position] = np.asarray(frame.to_image().convert("RGB"), dtype=np.uint8)
-                if len(frames) == len(wanted):
-                    break
-    missing = wanted - frames.keys()
-    if missing:
-        raise RuntimeError(f"{video_path}: frames {sorted(missing)} not found")
-    return frames
+def _to_hwc_uint8(image) -> np.ndarray:
+    """LeRobotDataset yields CHW float32 in [0, 1]; the wire protocol wants HWC uint8 RGB."""
+    array = image.numpy() if hasattr(image, "numpy") else np.asarray(image)
+    if array.dtype != np.uint8:
+        array = np.clip(np.rint(array * 255.0), 0, 255).astype(np.uint8)
+    if array.ndim == 3 and array.shape[0] in (1, 3):
+        array = np.transpose(array, (1, 2, 0))
+    return np.ascontiguousarray(array)
 
 
 def _replay(args: _ReplayArgs) -> dict:
-    import pyarrow.parquet as pq
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
-    client = UmiEeRemoteClient(UmiEeClientConfig(server_address=args.server, task=args.task))
+    # dataset metadata is the source of truth for fps, camera order, and resolution
+    meta = LeRobotDatasetMetadata(repo_id=args.repo_id, root=args.data_root)
+    image_keys = [key for key in meta.features if key.startswith("observation.images.")]
+    if not image_keys:
+        raise RuntimeError(f"{args.repo_id} declares no camera features")
+    camera_keys = tuple(key.removeprefix("observation.images.") for key in image_keys)
+    height, width = (int(v) for v in meta.features[image_keys[0]]["shape"][:2])
+    state_names = tuple(meta.features["observation.state"]["names"])
+
+    client = UmiEeRemoteClient(
+        UmiEeClientConfig(
+            server_address=args.server,
+            task=args.task,
+            camera_keys=camera_keys,
+            image_width=width,
+            image_height=height,
+            control_hz=float(meta.fps),
+            feature_names=state_names,
+        )
+    )
     session = client.connect()
     model = session.model
     horizon = model.action_horizon
     action_dim = model.action_dim
     print(
-        f"session open: model={model.model_id} horizon={horizon} dim={action_dim} cameras={model.camera_keys}"
+        f"session open: model={model.model_id} horizon={horizon} dim={action_dim} "
+        f"cameras={model.camera_keys} fps={meta.fps} image={width}x{height}"
     )
 
     pose_dims = [d for d in range(action_dim) if d not in args.gripper_dims]
     per_obs = []
-    for episode in args.episodes:
-        table = pq.read_table(f"{args.data_root}/data/chunk-000/file-{episode:03d}.parquet")
-        states = np.stack(table["observation.state"].to_numpy(zero_copy_only=False)).astype(np.float32)
-        actions = np.stack(table["action"].to_numpy(zero_copy_only=False)).astype(np.float32)
-        length = states.shape[0]
-        ticks = list(range(0, length - horizon, args.stride))[: args.max_obs_per_episode]
-        videos = {
-            key: _decode_frames(
-                f"{args.data_root}/videos/observation.images.{key}/chunk-000/file-{episode:03d}.mp4",
-                ticks,
+    try:
+        for episode in args.episodes:
+            # go through the dataset rather than guessing file paths: data files are
+            # size-based (an episode is not file-<episode>), may hold several episodes,
+            # and concatenated videos need per-episode timestamp offsets
+            dataset = LeRobotDataset(
+                repo_id=args.repo_id,
+                root=args.data_root,
+                episodes=[episode],
+                delta_timestamps={"action": [i / meta.fps for i in range(horizon)]},
+                image_transforms=None,  # validation must not augment
+                video_backend="pyav",
             )
-            for key in ("umi1", "umi2")
-        }
-        client.reset()
-        for tick in ticks:
-            started = time.perf_counter()
-            chunk = client.predict(states[tick], {key: videos[key][tick] for key in videos}, tick)
-            latency_s = time.perf_counter() - started
-            target = actions[tick : tick + horizon]
-            hold = np.repeat(states[tick][None, :], horizon, axis=0)
-            record = {
-                "episode": episode,
-                "tick": tick,
-                "latency_s": round(latency_s, 3),
-                "l1_pose": float(np.abs(chunk[:, pose_dims] - target[:, pose_dims]).mean()),
-                "l1_gripper": float(
-                    np.abs(chunk[:, list(args.gripper_dims)] - target[:, list(args.gripper_dims)]).mean()
-                ),
-                "hold_l1_pose": float(np.abs(hold[:, pose_dims] - target[:, pose_dims]).mean()),
-                "gripper_min": float(chunk[:, list(args.gripper_dims)].min()),
-                "gripper_max": float(chunk[:, list(args.gripper_dims)].max()),
-                "finite": bool(np.isfinite(chunk).all()),
-            }
-            per_obs.append(record)
-            print(record)
+            indices = list(range(0, len(dataset), args.stride))[: args.max_obs_per_episode]
+            client.reset()
+            for index in indices:
+                item = dataset[index]
+                state = item["observation.state"].numpy().astype(np.float32)
+                target = item["action"].numpy().astype(np.float32)
+                images = {
+                    key: _to_hwc_uint8(item[image_key])
+                    for key, image_key in zip(camera_keys, image_keys, strict=True)
+                }
+                started = time.perf_counter()
+                chunk = client.predict(state, images, index)
+                latency_s = time.perf_counter() - started
+                hold = np.repeat(state[None, :], horizon, axis=0)
+                pad = item.get("action_is_pad")
+                record = {
+                    "episode": episode,
+                    "index": index,
+                    "latency_s": round(latency_s, 3),
+                    "padded_rows": int(pad.sum()) if pad is not None else 0,
+                    "l1_pose": float(np.abs(chunk[:, pose_dims] - target[:, pose_dims]).mean()),
+                    "l1_gripper": float(
+                        np.abs(chunk[:, list(args.gripper_dims)] - target[:, list(args.gripper_dims)]).mean()
+                    ),
+                    "hold_l1_pose": float(np.abs(hold[:, pose_dims] - target[:, pose_dims]).mean()),
+                    "gripper_min": float(chunk[:, list(args.gripper_dims)].min()),
+                    "gripper_max": float(chunk[:, list(args.gripper_dims)].max()),
+                    "finite": bool(np.isfinite(chunk).all()),
+                }
+                per_obs.append(record)
+                print(record)
+    finally:
+        # the server allows one active session; leaking it blocks retries until the
+        # idle timeout expires
+        client.close()
 
-    client.close()
+    if not per_obs:
+        raise RuntimeError("replay produced no observations")
     l1_pose = float(np.mean([r["l1_pose"] for r in per_obs]))
     l1_grip = float(np.mean([r["l1_gripper"] for r in per_obs]))
     hold_pose = float(np.mean([r["hold_l1_pose"] for r in per_obs]))
@@ -275,6 +307,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
     parser.add_argument("--data_root", required=True)
+    parser.add_argument("--repo_id", required=True, help="repo id of the dataset at --data_root")
     parser.add_argument("--task", required=True)
     parser.add_argument("--episodes", type=int, nargs="+", default=[3, 17, 41])
     parser.add_argument("--stride", type=int, default=60)
@@ -285,6 +318,7 @@ def main() -> None:
         _ReplayArgs(
             server=ns.server,
             data_root=ns.data_root,
+            repo_id=ns.repo_id,
             task=ns.task,
             episodes=ns.episodes,
             stride=ns.stride,
