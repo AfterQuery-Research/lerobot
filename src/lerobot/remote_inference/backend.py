@@ -170,11 +170,19 @@ class LeRobotPolicyBackend(PolicyBackend):
                 revision=self._policy_config.pretrained_revision,
             )
         self._policy.to(self._device).eval()
+        # Saved pipelines carry the device of the machine that trained them, which would
+        # otherwise win over --policy.device: loading a GPU-trained checkpoint on a CPU-only
+        # host raises "Requested device 'cuda' but CUDA is not available" while the policy
+        # config itself downgrades to CPU gracefully. Actions are moved to CPU in infer(),
+        # so pinning both pipelines to the serving device is safe.
+        device_override = {"device_processor": {"device": config.device}}
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy_config,
             pretrained_path=None if config.policy_type == "molmoact2" else config.pretrained_name_or_path,
             pretrained_revision=self._policy_config.pretrained_revision,
             dataset_stats=self._dataset_stats,
+            preprocessor_overrides=device_override,
+            postprocessor_overrides=device_override,
         )
         self._manifest = self._build_manifest()
 
