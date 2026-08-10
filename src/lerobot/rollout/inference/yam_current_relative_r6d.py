@@ -228,12 +228,13 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
         query = self._queries.pop(chunk.observation_sequence, None)
         if query is None or chunk.observation_sequence != snapshot.sequence:
             raise ValueError(f"missing query anchor for policy observation {chunk.observation_sequence}")
-        decoded = self._adapter.decode_action_chunk(chunk.actions, query)
-        executable = decoded.actions[: self._settings.execution_horizon]
+        model_actions = chunk.actions[: self._settings.execution_horizon]
+        decoded = self._adapter.decode_action_chunk(model_actions, query)
+        executable = decoded.actions
         initial_joints = np.concatenate((query.left_joints, query.right_joints))
         decoded_joints = np.concatenate((decoded.actions[:, :6], decoded.actions[:, 7:13]), axis=1)
         joint_steps = np.diff(np.vstack((initial_joints, decoded_joints)), axis=0)
-        model_translations = np.concatenate((chunk.actions[:, :3], chunk.actions[:, 10:13]), axis=1)
+        model_translations = np.concatenate((model_actions[:, :3], model_actions[:, 10:13]), axis=1)
         logger.info(
             "Decoded current-relative chunk %d: executable=%d/%d max_translation=%.4fm "
             "max_joint_step=%.4frad max_ik_position_residual=%.3fmm "

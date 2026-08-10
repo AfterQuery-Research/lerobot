@@ -58,6 +58,23 @@ def _adapter() -> YamCurrentRelativeR6DAdapter:
     )
 
 
+class ExecutionWindowAdapter:
+    """Record how many policy rows reach strict IK."""
+
+    def __init__(self) -> None:
+        self.inner = _adapter()
+        self.decode_lengths: list[int] = []
+
+    def build_query(self, observation: dict, previous_observation: dict | None):
+        return self.inner.build_query(observation, previous_observation)
+
+    def decode_action_chunk(self, actions: np.ndarray, query):
+        self.decode_lengths.append(len(actions))
+        if len(actions) > 15:
+            raise AssertionError("diagnostic tail rows must not reach strict IK")
+        return self.inner.decode_action_chunk(actions, query)
+
+
 def _observation(left_xyz=(0.1, 0.5, 0.8), right_xyz=(0.2, 0.6, 0.9)) -> dict:
     values = [*left_xyz, 0.0, 0.0, 0.0, 0.7, *right_xyz, 0.0, 0.0, 0.0, 0.8]
     return dict(zip(YAM_SCALAR_KEYS, values, strict=True))
@@ -173,6 +190,7 @@ def test_specialized_engine_runs_transport_and_returns_yam_actions():
         image_encoding=ImageEncoding.JPEG,
         camera_calibration_sha256={},
     )
+    adapter = ExecutionWindowAdapter()
     engine = YamCurrentRelativeR6DRemoteInferenceEngine(
         settings=settings,
         yam_settings=YamCurrentRelativeR6DSettings(),
@@ -181,7 +199,7 @@ def test_specialized_engine_runs_transport_and_returns_yam_actions():
         ordered_action_keys=list(YAM_SCALAR_KEYS),
         task="Put all oranges in the bowl",
         fps=30.0,
-        adapter=_adapter(),
+        adapter=adapter,
     )
     observation = {
         **_observation(),
@@ -197,6 +215,7 @@ def test_specialized_engine_runs_transport_and_returns_yam_actions():
         assert action is not None
         assert action.shape == (14,)
         assert np.allclose(action.numpy(), list(_observation().values()))
+        assert adapter.decode_lengths == [15]
         assert not engine.failed
     finally:
         engine.stop()
