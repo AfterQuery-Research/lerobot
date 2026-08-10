@@ -79,6 +79,23 @@ def _round_up(value: int, multiple: int) -> int:
     return int(math.ceil(value / multiple) * multiple)
 
 
+def _pop_action_horizon_mask(complementary: dict[str, Any]) -> Any | None:
+    """Pop the dataset mask while preserving the legacy packed-input alias."""
+
+    dataset_mask = complementary.pop(f"{ACTION}_is_pad", None)
+    legacy_mask = complementary.pop("action_horizon_is_pad", None)
+    if dataset_mask is not None and legacy_mask is not None:
+        dataset_tensor = torch.as_tensor(dataset_mask)
+        legacy_tensor = torch.as_tensor(legacy_mask)
+        if (
+            dataset_tensor.dtype != legacy_tensor.dtype
+            or tuple(dataset_tensor.shape) != tuple(legacy_tensor.shape)
+            or not torch.equal(dataset_tensor.cpu(), legacy_tensor.cpu())
+        ):
+            raise ValueError("action_is_pad and action_horizon_is_pad disagree.")
+    return dataset_mask if dataset_mask is not None else legacy_mask
+
+
 def infer_molmoact2_max_sequence_length(
     *,
     num_images: int,
@@ -834,9 +851,20 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
             raise ValueError(f"State batch size {state.shape[0]} does not match batch size {batch_size}.")
         return state
 
-    def _pad_action(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def _pad_action(
+        self,
+        action: Tensor,
+        action_horizon_is_pad: Any | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        unbatched_sequence = (
+            action.ndim == 2
+            and action_horizon_is_pad is not None
+            and torch.as_tensor(action_horizon_is_pad).ndim == 1
+        )
         if action.ndim == 2:
-            action = action.unsqueeze(1)
+            # A 1-D horizon mask disambiguates [T, D] from the legacy [B, D]
+            # single-step form, which continues to become [B, 1, D].
+            action = action.unsqueeze(0 if unbatched_sequence else 1)
         if action.ndim != 3:
             raise ValueError(f"MolmoAct2 expected action shape [B, T, D], got {tuple(action.shape)}.")
         if action.shape[-1] > self.max_action_dim:
@@ -853,11 +881,21 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
             (action.shape[0], self.max_action_dim), device=action.device, dtype=torch.bool
         )
         action_dim_is_pad[:, : action.shape[-1]] = False
-        # LeRobot clamps future actions at episode ends and marks them as padding. The
-        # original MolmoAct2 training objective keeps supervising those clamped actions
-        # for fixed-horizon fine-tuning, so the horizon mask is intentionally all false.
-        action_horizon_is_pad = torch.zeros(action.shape[:2], device=action.device, dtype=torch.bool)
-        return padded, action_horizon_is_pad, action_dim_is_pad
+        if action_horizon_is_pad is None:
+            horizon_mask = torch.zeros(action.shape[:2], device=action.device, dtype=torch.bool)
+        else:
+            horizon_mask = torch.as_tensor(action_horizon_is_pad)
+            if horizon_mask.dtype != torch.bool:
+                raise ValueError(f"{ACTION}_is_pad must have Boolean dtype, got {horizon_mask.dtype}.")
+            if horizon_mask.ndim == 1 and action.shape[0] == 1:
+                horizon_mask = horizon_mask.unsqueeze(0)
+            if horizon_mask.ndim != 2 or tuple(horizon_mask.shape) != tuple(action.shape[:2]):
+                raise ValueError(
+                    f"{ACTION}_is_pad must have shape [B, T]={tuple(action.shape[:2])}, "
+                    f"got {tuple(horizon_mask.shape)}."
+                )
+            horizon_mask = horizon_mask.to(device=action.device)
+        return padded, horizon_mask, action_dim_is_pad
 
     def _build_labels(self, input_ids: Tensor, attention_mask: Tensor) -> Tensor:
         labels = torch.full_like(input_ids, -100)
@@ -920,8 +958,14 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
         action_horizon_is_pad = None
         action_dim_is_pad = torch.ones((batch_size, self.max_action_dim), dtype=torch.bool)
         real_action_dim = int(self.env_action_dim or 0)
+        raw_action_is_pad = _pop_action_horizon_mask(complementary)
+        if raw_action_is_pad is not None and action is None:
+            raise ValueError("an action horizon padding mask was provided without an action tensor.")
         if action is not None:
-            action_padded, action_horizon_is_pad, action_dim_is_pad = self._pad_action(action)
+            action_padded, action_horizon_is_pad, action_dim_is_pad = self._pad_action(
+                action,
+                raw_action_is_pad,
+            )
             real_action_dim = int(action.shape[-1])
         elif real_action_dim > 0:
             action_dim_is_pad[:, :real_action_dim] = False

@@ -428,7 +428,7 @@ def test_cuda_graph_managers_are_inference_only():
     assert policy.model.depth_decode_cuda_graph_manager.enabled is False
 
 
-def test_lora_targets_exclude_action_expert():
+def test_lora_action_expert_target_remains_legacy_opt_in():
     policy = object.__new__(MolmoAct2Policy)
     torch.nn.Module.__init__(policy)
     policy.config = SimpleNamespace(
@@ -436,6 +436,7 @@ def test_lora_targets_exclude_action_expert():
         lora_alpha=16,
         lora_dropout=0.05,
         lora_bias="none",
+        enable_lora_action_expert=False,
     )
 
     targets = policy._get_default_peft_targets()["target_modules"]
@@ -445,6 +446,10 @@ def test_lora_targets_exclude_action_expert():
     assert "state_encoder" not in targets
     assert "state_norm" not in targets
     assert "kv_proj" not in targets
+
+    policy.config.enable_lora_action_expert = True
+    targets = policy._get_default_peft_targets()["target_modules"]
+    assert "action_expert" in targets
 
 
 def test_train_mode_vlm_lora_wraps_loaded_hf_model_locally():
@@ -476,6 +481,7 @@ def test_train_mode_vlm_lora_wraps_loaded_hf_model_locally():
         lora_dropout=0.0,
         lora_bias="none",
         train_mode_vlm="lora",
+        enable_lora_action_expert=False,
         enable_inference_cuda_graph=False,
     )
     policy.model = DummyHFModel()
@@ -530,6 +536,12 @@ def test_train_mode_vlm_rejects_unknown_value():
         MolmoAct2Config(train_mode_vlm="frozen")
 
 
+def test_train_mode_vlm_preserves_legacy_fft_default():
+    cfg = MolmoAct2Config()
+    assert cfg.train_mode_vlm == "fft"
+    assert cfg.llm_residual_dropout == 0.0
+
+
 @pytest.mark.parametrize(
     ("legacy_kwargs", "expected_mode"),
     [
@@ -556,6 +568,24 @@ def test_null_legacy_vlm_training_fields_do_not_override_train_mode():
 def test_conflicting_legacy_vlm_training_fields_are_rejected():
     with pytest.raises(ValueError, match="Conflicting MolmoAct2 VLM training modes"):
         MolmoAct2Config(train_mode_vlm="fft", enable_lora_vlm=True)
+
+
+def test_incompatible_legacy_vlm_training_fields_are_rejected():
+    with pytest.raises(ValueError, match="train_action_expert_only is incompatible with enable_lora_vlm"):
+        MolmoAct2Config(
+            action_mode="continuous",
+            train_action_expert_only=True,
+            enable_lora_vlm=True,
+        )
+
+
+def test_legacy_action_expert_lora_remains_loadable_only_with_vlm_lora():
+    cfg = MolmoAct2Config(enable_lora_vlm=True, enable_lora_action_expert=True)
+    assert cfg.train_mode_vlm == "lora"
+    assert cfg.enable_lora_action_expert is True
+
+    with pytest.raises(ValueError, match="requires train_mode_vlm='lora'"):
+        MolmoAct2Config(enable_lora_action_expert=True)
 
 
 def test_molmoact2_sequence_length_is_inferred_from_fixed_token_budget():
@@ -1027,6 +1057,33 @@ def test_action_chunk_padding_keeps_old_mean_denominator():
     masked = _apply_action_chunk_padding_mask(loss, action_horizon_is_pad)
 
     assert masked.mean().item() == 0.5
+
+
+def test_prepare_flow_matching_tensors_accepts_explicit_timesteps_and_keeps_fp32():
+    policy = object.__new__(MolmoAct2Policy)
+    torch.nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        num_flow_timesteps=2,
+        mask_action_dim_padding=False,
+    )
+    actions = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]], dtype=torch.float16)
+    timesteps = torch.tensor([[0.25, 0.75]], dtype=torch.float64)
+    noise = torch.zeros(1, 2, 2, 2, dtype=torch.float64)
+
+    prepared_actions, prepared_timesteps, xt, target_velocity = policy._prepare_flow_matching_tensors(
+        actions=actions,
+        action_dim_is_pad=None,
+        timesteps=timesteps,
+        noise=noise,
+    )
+
+    assert prepared_actions.dtype == torch.float32
+    assert prepared_timesteps.dtype == torch.float32
+    assert xt.dtype == torch.float32
+    assert target_velocity.dtype == torch.float32
+    expected = prepared_actions.unsqueeze(1) * prepared_timesteps.view(1, 2, 1, 1)
+    torch.testing.assert_close(xt, expected)
+    torch.testing.assert_close(target_velocity, prepared_actions.unsqueeze(1).expand_as(xt))
 
 
 def test_selected_discrete_loss_matches_full_causal_lm_loss():

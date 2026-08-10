@@ -7,7 +7,7 @@ LeRobot datasets.
 
 This implementation currently supports training and evaluation for the regular
 MolmoAct2 model. MolmoAct2-Think, which supports adaptive depth reasoning, is
-not included in this LeRobot policy yet.
+not included in this LeRobot policy yet and is coming soon.
 
 For the original MolmoAct2 training code used for the experiments reported in
 the paper, see [allenai/molmoact2](https://github.com/allenai/molmoact2).
@@ -82,7 +82,6 @@ accelerate launch \
   --policy.checkpoint_path=allenai/MolmoAct2-LIBERO \
   --policy.device=cuda \
   --policy.action_mode=both \
-  --policy.train_mode_vlm=fft \
   --policy.chunk_size=10 \
   --policy.n_action_steps=10 \
   --policy.setup_type="single franka robotic arm in libero" \
@@ -115,7 +114,7 @@ Use `policy.path` when starting from a MolmoAct2 checkpoint that was saved by
 LeRobot, either from a local `pretrained_model` directory or from the Hub. This
 restores the saved LeRobot policy config, model weights, processor, and
 normalization statistics. You can still override training-time options such as
-`batch_size`, `steps`, `policy.train_mode_vlm`, or `policy.action_mode`.
+`batch_size`, `steps`, LoRA flags, or `policy.action_mode`.
 
 ```bash
 accelerate launch \
@@ -152,13 +151,11 @@ accelerate launch \
 
 For fine-tuning on a comparatively small dataset, such as a single LIBERO suite
 or a real-world dataset with less than 200 demonstrations, a global batch size of
-16 to 32 is a good starting point. In these settings, we recommend using
-`policy.train_mode_vlm=lora` (the default), which usually gives similar or even
-better performance than `fft`. Additionally, `policy.train_mode_vlm=freeze` is
-also a practical choice. In all modes, we intentionally keep the action expert
-fully trainable, which we found to be crucial for model performance. For larger
-fine-tuning datasets, larger global batch sizes and full VLM fine-tuning
-(`policy.train_mode_vlm=fft`) are usually preferred.
+16 to 32 is a good starting point. In these settings,
+`policy.train_mode_vlm=lora` or `policy.train_mode_vlm=freeze` is also a
+practical choice. LoRA on the VLM keeps the action expert fully trainable,
+which we found to be crucial for model performance. For larger fine-tuning
+datasets, larger global batch sizes and full fine-tuning are usually preferred.
 
 ### Common Policy Options
 
@@ -169,11 +166,15 @@ fine-tuning datasets, larger global batch sizes and full VLM fine-tuning
 - `policy.action_mode`: training target, one of `continuous`, `discrete`, or
   `both`. `both` trains the flow-matching action expert and the discrete
   action-token loss.
-- `policy.train_mode_vlm`: controls the VLM fine-tuning mode, one of `fft`,
-  `lora`, or `freeze`. `fft` fully fine-tunes the VLM, `lora` trains LoRA
-  adapters on VLM linear layers, and `freeze` freezes the VLM. The action expert
-  is fully fine-tuned in all three modes. The default is `lora`. `freeze`
-  requires `policy.action_mode=continuous`.
+- `policy.train_mode_vlm`: VLM training mode, one of `fft`, `lora`, or
+  `freeze`. `fft` is the backward-compatible default. `lora` adapter-tunes the
+  VLM while fully fine-tuning the action expert. `freeze` trains only the action
+  expert and requires `policy.action_mode=continuous`.
+- `policy.enable_lora_vlm`, `policy.enable_lora_action_expert`, and
+  `policy.train_action_expert_only`: deprecated checkpoint/config aliases kept
+  for backward compatibility. New recipes should use `policy.train_mode_vlm`.
+  Legacy action-expert LoRA remains loadable when VLM LoRA is enabled, but is
+  not recommended for new fine-tuning runs.
 - `policy.enable_knowledge_insulation`: when `true`, detaches action-expert
   context K/V states before the action loss. The default is `false`.
 - `policy.chunk_size`: action horizon used by the policy. For LIBERO we use
@@ -191,6 +192,9 @@ fine-tuning datasets, larger global batch sizes and full VLM fine-tuning
   processor.
 - `policy.model_dtype`: checkpoint/forward dtype, one of `float32`,
   `bfloat16`, or `float16`. Use `bfloat16` for normal training.
+- `policy.llm_residual_dropout`: residual dropout applied to the text
+  transformer while training. The backward-compatible default is `0.0`;
+  set it explicitly when a recipe requires additional regularization.
 - `policy.num_flow_timesteps`: number of flow-matching timesteps sampled per
   example during training. We use `8` for fine-tuning.
 - `policy.num_inference_steps`: optional override for continuous action
@@ -218,10 +222,11 @@ fine-tuning experiments.
   `policy.optimizer_connector_lr=5e-6` for image connector layers, and
   `policy.optimizer_action_expert_lr=5e-5` for the action expert.
 - LoRA VLM fine-tuning sets the VLM, vision, and connector LoRA parameter
-  groups to `5e-5` when `policy.train_mode_vlm=lora`; the action expert is still
-  fully fine-tuned with `policy.optimizer_action_expert_lr`.
-- Frozen-VLM fine-tuning uses `policy.train_mode_vlm=freeze`, trains only the
-  action expert, and uses `policy.optimizer_action_expert_lr=5e-5`.
+  groups to `5e-5` when `policy.train_mode_vlm=lora`. The action expert is
+  still fully fine-tuned with `policy.optimizer_action_expert_lr` unless an old
+  checkpoint explicitly enables the deprecated action-expert LoRA mode.
+- Action-expert-only fine-tuning trains only the action expert and uses
+  `policy.optimizer_action_expert_lr=5e-5`.
 
 You can override the full fine-tuning and action-expert learning rates with
 `policy.optimizer_lr`, `policy.optimizer_vit_lr`,
@@ -389,10 +394,6 @@ evaluation section.
 LeRobot-format checkpoints are available on the Hub for direct use with
 `lerobot-rollout`. Each checkpoint uses specific camera names that must
 match your robot's camera configuration.
-
-For a GPU policy server on a different machine, including the original
-`allenai/MolmoAct2` checkpoint and the dual-YAM adapter, see
-[Remote Policy Inference](./remote_inference).
 
 ### Camera naming convention
 

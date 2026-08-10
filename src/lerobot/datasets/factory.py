@@ -29,6 +29,18 @@ from .dataset_metadata import LeRobotDatasetMetadata
 from .lerobot_dataset import LeRobotDataset
 from .multi_dataset import MultiLeRobotDataset
 from .streaming_dataset import StreamingLeRobotDataset
+from .umi_current_relative import UmiCurrentRelativeR6dDataset, is_umi_current_relative_dataset
+
+
+def _apply_imagenet_stats(dataset: LeRobotDataset | StreamingLeRobotDataset) -> None:
+    """Install ImageNet normalization even when the artifact omits image statistics."""
+
+    for key in dataset.meta.camera_keys:
+        if key in dataset.meta.depth_keys:
+            continue
+        camera_stats = dataset.meta.stats.setdefault(key, {})
+        for stats_type, stats in IMAGENET_STATS.items():
+            camera_stats[stats_type] = torch.tensor(stats, dtype=torch.float32)
 
 
 def resolve_delta_timestamps(
@@ -86,8 +98,26 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         ds_meta = LeRobotDatasetMetadata(
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
-        delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, ds_meta)
-        if not cfg.dataset.streaming:
+        uses_umi_current_relative = is_umi_current_relative_dataset(ds_meta.root)
+        if uses_umi_current_relative and cfg.dataset.streaming:
+            raise ValueError("the UMI current-relative v1 sampler does not support streaming datasets")
+        delta_timestamps = (
+            None if uses_umi_current_relative else resolve_delta_timestamps(cfg.trainable_config, ds_meta)
+        )
+        if uses_umi_current_relative:
+            dataset = UmiCurrentRelativeR6dDataset(
+                cfg.dataset.repo_id,
+                root=ds_meta.root,
+                episodes=cfg.dataset.episodes,
+                image_transforms=image_transforms,
+                revision=cfg.dataset.revision,
+                video_backend=cfg.dataset.video_backend,
+                return_uint8=True,
+                depth_output_unit=cfg.dataset.depth_output_unit,
+                tolerance_s=cfg.tolerance_s,
+                action_horizon=int(cfg.trainable_config.chunk_size),
+            )
+        elif not cfg.dataset.streaming:
             dataset = LeRobotDataset(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
@@ -127,11 +157,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         )
 
     if cfg.dataset.use_imagenet_stats:
-        for key in dataset.meta.camera_keys:
-            if key in dataset.meta.depth_keys:
-                continue  # Exclude depth keys from ImageNet stats
-            for stats_type, stats in IMAGENET_STATS.items():
-                dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+        _apply_imagenet_stats(dataset)
 
     return dataset
 
@@ -148,6 +174,53 @@ def make_train_eval_datasets(
 
     if cfg.dataset.eval_split == 0.0:
         return full_dataset, None
+
+    if isinstance(full_dataset, UmiCurrentRelativeR6dDataset):
+        split = full_dataset.split_manifest
+        base_episodes = set(
+            full_dataset.episodes
+            if full_dataset.episodes is not None
+            else range(full_dataset.meta.total_episodes)
+        )
+        train_episodes = [episode for episode in split["train"] if episode in base_episodes]
+        eval_episodes = [episode for episode in split["validation"] if episode in base_episodes]
+        if train_episodes != split["train"] or eval_episodes != split["validation"]:
+            raise ValueError(
+                "dataset.episodes must include the complete v1 train=0..51 and validation=52..53 manifest"
+            )
+        requested_eval_count = math.ceil(len(base_episodes) * cfg.dataset.eval_split)
+        if requested_eval_count != len(eval_episodes):
+            raise ValueError(
+                f"eval_split={cfg.dataset.eval_split} requests {requested_eval_count} held-out episodes, "
+                f"but the v1 manifest requires {len(eval_episodes)}"
+            )
+        logging.info("Train/eval split from v1 manifest: 52 train, 2 eval episodes")
+        train_image_transforms = (
+            ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
+        )
+        common_kwargs = {
+            "repo_id": cfg.dataset.repo_id,
+            "root": full_dataset.root,
+            "revision": cfg.dataset.revision,
+            "video_backend": cfg.dataset.video_backend,
+            "return_uint8": True,
+            "tolerance_s": cfg.tolerance_s,
+            "action_horizon": int(cfg.trainable_config.chunk_size),
+        }
+        train_dataset = UmiCurrentRelativeR6dDataset(
+            **common_kwargs,
+            episodes=train_episodes,
+            image_transforms=train_image_transforms,
+        )
+        eval_dataset = UmiCurrentRelativeR6dDataset(
+            **common_kwargs,
+            episodes=eval_episodes,
+            image_transforms=None,
+        )
+        if cfg.dataset.use_imagenet_stats:
+            for dataset in (train_dataset, eval_dataset):
+                _apply_imagenet_stats(dataset)
+        return train_dataset, eval_dataset
 
     base_episodes = (
         full_dataset.episodes if full_dataset.episodes is not None else list(range(full_dataset.num_episodes))
@@ -207,8 +280,6 @@ def make_train_eval_datasets(
 
     if cfg.dataset.use_imagenet_stats:
         for ds in (train_dataset, eval_dataset):
-            for key in ds.meta.camera_keys:
-                for stats_type, stats in IMAGENET_STATS.items():
-                    ds.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+            _apply_imagenet_stats(ds)
 
     return train_dataset, eval_dataset

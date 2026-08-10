@@ -935,7 +935,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             )
         else:
             expected_timesteps_shape = (batch_size, num_flow_timesteps)
-            timesteps = timesteps.to(device=device, dtype=action_dtype)
+            timesteps = timesteps.to(device=device, dtype=actions.dtype)
             if tuple(timesteps.shape) != expected_timesteps_shape:
                 raise ValueError(
                     f"flow timesteps must have shape {expected_timesteps_shape}, got {tuple(timesteps.shape)}."
@@ -1751,7 +1751,21 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
     def _lora_target_modules(self, *, prefix: str) -> str:
         vlm_linear_leaves = "w1|w2|w3|wq|wk|wv|wo|att_proj|attn_out|ff_proj|ff_out|patch_embedding"
-        return rf"{prefix}\.(transformer|vision_backbone)\.(?:.*\.)?({vlm_linear_leaves})$"
+        target_modules = rf"{prefix}\.(transformer|vision_backbone)\.(?:.*\.)?({vlm_linear_leaves})$"
+        if self.config.enable_lora_action_expert:
+            action_expert_linear_paths = (
+                r"time_embed\.(1|3)|"
+                r"action_embed|context_k_proj|context_v_proj|"
+                r"blocks\.\d+\.self_attn\.(qkv|out_proj)|"
+                r"blocks\.\d+\.cross_attn\.(q_proj|out_proj)|"
+                r"blocks\.\d+\.mlp\.(up_proj|gate_proj|down_proj)|"
+                r"blocks\.\d+\.modulation\.linear|"
+                r"final_layer\.(modulation\.linear|linear)"
+            )
+            target_modules = (
+                f"({target_modules}|" rf"{prefix}\.action_expert\.({action_expert_linear_paths})$)"
+            )
+        return target_modules
 
     def _build_inner_lora_config(self):
         require_package("peft", extra="molmoact2")
@@ -1767,7 +1781,8 @@ class MolmoAct2Policy(PreTrainedPolicy):
         for param in self.model.parameters():
             param.requires_grad_(False)
         self.model = get_peft_model(self.model, peft_config)
-        self._unfreeze_action_expert_parameters()
+        if not self.config.enable_lora_action_expert:
+            self._unfreeze_action_expert_parameters()
         self.train(self.training)
 
     def _validate_peft_config(self, peft_config) -> None:
