@@ -1,0 +1,314 @@
+{
+  "schema_id": "umi-yam-onset-v3-checkpoint-gate-plan-v1",
+  "dataset": {
+    "schema_id": "dual-lidar-umi-currentrel-r6d-onset-v3",
+    "repo_id": "brandonyang/dual-lidar-umi-currentrel-r6d-onset-v3",
+    "holdout_episodes": [
+      52,
+      53
+    ],
+    "query_index_within_exported_episode": 0
+  },
+  "candidate_checkpoint_steps": [
+    1000,
+    2000,
+    3000,
+    4000,
+    5000,
+    6000,
+    7000,
+    8000,
+    9000,
+    10000,
+    11000,
+    12000
+  ],
+  "inference": {
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "num_flow_steps": 10,
+    "one_fresh_query_per_cell": true,
+    "expected_cells_per_checkpoint": 10
+  },
+  "execution": {
+    "horizon_rows": 15,
+    "full_24_row_execution_performed": false,
+    "adapter_max_joint_delta_rad_per_call": 0.02,
+    "driver_max_joint_delta_rad_per_call": 0.1,
+    "max_progress_hold_steps": 90,
+    "strict_ik_required_for_every_arm_row": true,
+    "required_strict_cells_per_checkpoint": 10
+  },
+  "yam_start_anchor": {
+    "driver_order": [
+      "left_joint_0",
+      "left_joint_1",
+      "left_joint_2",
+      "left_joint_3",
+      "left_joint_4",
+      "left_joint_5",
+      "left_gripper",
+      "right_joint_0",
+      "right_joint_1",
+      "right_joint_2",
+      "right_joint_3",
+      "right_joint_4",
+      "right_joint_5",
+      "right_gripper"
+    ],
+    "absolute_driver_target": [
+      0.0,
+      0.05,
+      0.05,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.05,
+      0.05,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "left_arm_joints_rad": [
+      0.0,
+      0.05,
+      0.05,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "right_arm_joints_rad": [
+      0.0,
+      0.05,
+      0.05,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "grippers_normalized": [
+      1.0,
+      1.0
+    ],
+    "fk_source": "fresh measured joints at the start of every closed-loop query",
+    "hardware_start_verified": false,
+    "hardware_start_requirement": "supervised collision and homologous jaw/wrist-camera viewpoint confirmation before any hardware rollout"
+  },
+  "retargeting": {
+    "umi_tcp_to_yam_tcp_rotation": "Ry(pi)",
+    "target_equation": "T_yam_target = FK(q_measured) @ C @ delta_umi @ inverse(C)",
+    "absolute_joint_targets": true,
+    "command_acknowledgement_is_measured_state": false
+  },
+  "behavior_gate": {
+    "metric": "mean first-15-row dual-arm SE(3) error; each arm-row error is 0.5*(translation_error_m/0.01 + rotation_geodesic_rad/radians(10))",
+    "translation_scale_m": 0.01,
+    "rotation_scale_deg": 10.0,
+    "identity_baseline": "zero translation and identity rotation at every predicted row",
+    "minimum_relative_improvement_over_identity": 0.1,
+    "relative_improvement_equation": "1 - pooled_model_normalized_pose_error / pooled_identity_normalized_pose_error",
+    "pooling": "exactly 10 cells x 2 arms x 15 rows; no cell, arm, or row exclusion",
+    "require_per_arm_motion_report": true,
+    "per_arm_motion_report_fields": [
+      "predicted_endpoint_translation_m_by_cell",
+      "target_endpoint_translation_m_by_cell",
+      "predicted_max_translation_m_by_cell",
+      "target_max_translation_m_by_cell",
+      "predicted_endpoint_rotation_rad_by_cell",
+      "target_endpoint_rotation_rad_by_cell",
+      "endpoint_translation_direction_cosine_by_cell"
+    ],
+    "motion_report_is_additional_diagnostic_not_checkpoint_selector": true
+  },
+  "temporal_teacher_forced_gate": {
+    "schema_id": "umi-yam-onset-v3-temporal-teacher-forced-gate-contract-v1",
+    "implementation_status": "predeclared fail-closed contract; runnable producer and independent aggregate are required before supervised start verification",
+    "execution_order": "run on every checkpoint that passes the first-stage onset gate before final checkpoint selection",
+    "checkpoint_selection_effect": "temporal pass is an additional eligibility requirement; after all fixed cells finish, select the lowest full-holdout loss among checkpoints passing both gates",
+    "failure_behavior": "exclude a failing checkpoint from final eligibility; if none pass both gates, block advancement and diagnose or retrain",
+    "scope": {
+      "holdout_episodes": [
+        52,
+        53
+      ],
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "num_flow_steps": 10,
+      "action_horizon_rows": 24,
+      "execution_horizon_rows": 15,
+      "query_stride_source_frames": 15,
+      "teacher_forced_source_images": true,
+      "teacher_forced_source_policy_state": true,
+      "predicted_yam_joints_carried_continuously_across_queries": true,
+      "query_anchor_from_carried_yam_fk": true,
+      "initial_arm_joints_rad": [
+        0.0,
+        0.05,
+        0.05,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "original_idle_reset_prefix_included": false,
+      "original_idle_reset_prefix_role": "separate diagnostic only; it is not an ACTIVE runtime phase"
+    },
+    "task_critical_windows": [
+      {
+        "episode": 52,
+        "exported_frame_count": 974,
+        "source_onset_frame": 27,
+        "final_contact_source_frame": 826,
+        "final_contact_exported_frame": 799,
+        "required_through_exported_frame_inclusive": 823,
+        "last_required_query_exported_frame": 810,
+        "diagnostic_tail_exported_frames_inclusive": [
+          824,
+          973
+        ]
+      },
+      {
+        "episode": 53,
+        "exported_frame_count": 910,
+        "source_onset_frame": 26,
+        "final_contact_source_frame": 784,
+        "final_contact_exported_frame": 758,
+        "required_through_exported_frame_inclusive": 782,
+        "last_required_query_exported_frame": 780,
+        "diagnostic_tail_exported_frames_inclusive": [
+          783,
+          909
+        ]
+      }
+    ],
+    "critical_window_rule": "from exported onset through the last source contact anchor plus 24 frames, clipped to the episode; query at 0,15,... and execute rows 1..15",
+    "behavior_gate": {
+      "metric": "for each critical executed arm-row: 0.5*(translation_error_m/0.01 + SO3_geodesic_error_rad/radians(10)); compare raw current-relative UMI prediction with the dataset target",
+      "translation_scale_m": 0.01,
+      "rotation_scale_deg": 10.0,
+      "identity_baseline": "zero translation and identity rotation independently at every query",
+      "pooling": "exactly 10 fixed seed-by-episode cells x 2 arms x every critical executed row; 16050 arm-rows per checkpoint; no seed, episode, arm, query, or row exclusion",
+      "critical_arm_row_count_per_checkpoint": 16050,
+      "minimum_relative_improvement_over_identity": 0.1,
+      "relative_improvement_equation": "1 - pooled_model_normalized_pose_error / pooled_identity_normalized_pose_error",
+      "all_strict_rows_still_required": true,
+      "tail_excluded_from_behavior_eligibility": true,
+      "motion_amplitude_and_phase_report_required": true,
+      "binary_eligibility_not_checkpoint_score": true
+    },
+    "strict_recomputation": {
+      "independent_of_child_boolean_summaries": true,
+      "resolver_output_recomputed_bit_exactly": true,
+      "fk_position_and_orientation_residuals_recomputed": true,
+      "operational_joint_limits_recomputed": true,
+      "joint_rate_and_progress_dispatches_recomputed": true,
+      "adapter_max_joint_delta_rad_per_call": 0.02,
+      "driver_max_joint_delta_rad_per_call": 0.1,
+      "max_progress_hold_steps": 90,
+      "all_rows_through_required_window_must_pass_for_every_episode_and_seed": true,
+      "best_bounded_continuation_after_failure_is_diagnostic_only": true,
+      "tail_pass_is_reported_separately_and_is_not_an_eligibility_substitute": true
+    },
+    "required_per_row_record_fields": [
+      "episode",
+      "seed",
+      "query_exported_frame",
+      "chunk_row",
+      "executed_exported_frame",
+      "window_label",
+      "arm",
+      "model_input_state_float32_sha256",
+      "model_input_image_rgb_sha256",
+      "raw_prediction_float32_sha256",
+      "resolved_target_base_tcp_xyz_rotvec",
+      "ik_continuity_seed_rad",
+      "ik_joint_target_rad",
+      "ik_converged",
+      "fk_position_residual_m",
+      "fk_orientation_residual_rad",
+      "operational_joint_limits_pass",
+      "required_dispatches_under_ideal_measured_feedback",
+      "maximum_simulated_command_delta_rad",
+      "row_pass",
+      "predicted_gripper",
+      "ground_truth_gripper"
+    ],
+    "required_reports": {
+      "per_row_records_saved": true,
+      "critical_and_tail_summaries_separate": true,
+      "gripper_range_and_event_timing_diagnostics": true,
+      "motion_amplitude_and_phase_diagnostics": true,
+      "first_strict_failure_saved": true,
+      "checkpoint_dataset_code_i2rt_and_runner_sha256_bound": true
+    },
+    "claims": {
+      "autonomous_closed_loop_rollout": false,
+      "visual_compounding_tested": false,
+      "objects_or_contact_simulated": false,
+      "grasp_success_proven": false,
+      "collision_clearance_proven": false,
+      "hardware_control_performed": false,
+      "hardware_deployment_ready": false
+    }
+  },
+  "runtime_phase_contract": {
+    "RESET_HOLD": "policy is not queried and policy actions are not consumed; hold the measured safe target while reset/start gates are checked",
+    "START": "an explicit operator START edge is required after physical start, collision, camera-viewpoint, gripper-calibration, and object-scene gates pass",
+    "ACTIVE15_REQUERY": "query from fresh measured state and images, execute at most rows 1..15 with strict IK/rate/progress checks, then requery from fresh measured FK",
+    "STOP_HOLD_DISARM": "on operator stop, stale or malformed input, nonfinite output, strict IK failure, rate/progress failure, timeout, or transport fault: consume no further policy rows, hold safely, then disarm according to the hardware procedure",
+    "best_effort_execution_allowed": false,
+    "original_idle_reset_prefix_role": "offline diagnostic only; never use it to loosen ACTIVE safety gates"
+  },
+  "eligibility": {
+    "all_10_first_15_strict_execution_cells_required": true,
+    "behavior_margin_required": true,
+    "hardware_start_verified_required_for_offline_checkpoint_eligibility": false,
+    "hardware_start_verified_required_for_hardware_deployment": true,
+    "full_holdout_loss_used_only_after_gate_eligibility": true,
+    "eligible_checkpoint_selection": "lowest full-holdout loss; ties at logged precision choose the earlier step",
+    "temporal_teacher_forced_gate_runs_on_every_onset_eligible_checkpoint_before_selection": true,
+    "temporal_teacher_forced_gate_is_additional_eligibility_not_a_score": true,
+    "temporal_full_critical_behavior_margin_required": true,
+    "final_selection_uses_loss_only_among_checkpoints_passing_both_gates": true,
+    "no_temporal_threshold_or_tolerance_relaxation": true,
+    "no_seed_or_checkpoint_cherry_picking": true
+  },
+  "ground_truth_start_anchor_audit": {
+    "episode_count": 54,
+    "first_15_arm_row_pass_count": 1620,
+    "first_15_arm_row_count": 1620,
+    "full_24_arm_row_pass_count": 2592,
+    "full_24_arm_row_count": 2592,
+    "maximum_required_dispatches_per_waypoint": 4
+  },
+  "negative_q0_provenance": {
+    "start_arm_joints_rad": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "first_15_arm_row_pass_count": 1614,
+    "first_15_arm_row_count": 1620,
+    "first_15_episode_pass_count": 51,
+    "episode_count": 54,
+    "full_24_arm_row_pass_count": 2532,
+    "full_24_arm_row_count": 2592,
+    "full_24_episode_pass_count": 45,
+    "audit_report_sha256": "6286f864b68db796d63e22bd03e537986596f14938d6c6d0dc97bdb82a3bf105",
+    "conclusion": "q0 is negative provenance and must not be substituted for the predeclared interior gate anchor"
+  }
+}

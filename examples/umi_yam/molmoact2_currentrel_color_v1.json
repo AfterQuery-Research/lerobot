@@ -1,0 +1,17 @@
+{
+  "brightness": {
+    "weight": 1.0,
+    "type": "ColorJitter",
+    "kwargs": {"brightness": [0.8, 1.2]}
+  },
+  "contrast": {
+    "weight": 1.0,
+    "type": "ColorJitter",
+    "kwargs": {"contrast": [0.8, 1.2]}
+  },
+  "saturation": {
+    "weight": 1.0,
+    "type": "ColorJitter",
+    "kwargs": {"saturation": [0.8, 1.2]}
+  }
+}

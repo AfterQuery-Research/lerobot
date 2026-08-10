@@ -88,19 +88,24 @@ class MolmoAct2Config(PreTrainedConfig):
     joint_signs: list[float] | None = None
     joint_offsets: list[float] | None = None
 
-    # Default is full finetuning with gradients from the action expert flowing into the VLM.
-    enable_lora_vlm: bool = False
+    # Controls the VLM side. The action expert remains fully fine-tuned for new
+    # configurations; the deprecated action-expert LoRA flag remains loadable.
+    train_mode_vlm: str | None = None
+    # Deprecated checkpoint fields retained so policies saved before train_mode_vlm
+    # can still be loaded. New configurations should use train_mode_vlm.
+    enable_lora_vlm: bool | None = None
+    enable_lora_action_expert: bool | None = None
+    train_action_expert_only: bool | None = None
     lora_rank: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.05
     lora_bias: str = "none"
-    enable_lora_action_expert: bool = False
     enable_knowledge_insulation: bool = False
     freeze_embedding: bool = True
-    train_action_expert_only: bool = False
     gradient_checkpointing: bool = False
 
     model_dtype: str = "bfloat16"
+    llm_residual_dropout: float = 0.0
     softmax_auxiliary_loss: bool = True
     softmax_auxiliary_loss_scale: float = 1e-4
     discrete_loss_token_weighting: str = "root_subsegments_root_tokens"
@@ -132,6 +137,21 @@ class MolmoAct2Config(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.train_action_expert_only and self.enable_lora_vlm:
+            raise ValueError("MolmoAct2 train_action_expert_only is incompatible with enable_lora_vlm.")
+        legacy_train_mode: str | None = None
+        if self.train_action_expert_only:
+            legacy_train_mode = "freeze"
+        elif self.enable_lora_vlm is not None:
+            legacy_train_mode = "lora" if self.enable_lora_vlm else "fft"
+        if self.train_mode_vlm is None:
+            # Preserve the pre-train_mode_vlm default (full VLM fine-tuning).
+            self.train_mode_vlm = legacy_train_mode or "fft"
+        elif legacy_train_mode is not None and self.train_mode_vlm != legacy_train_mode:
+            raise ValueError(
+                "Conflicting MolmoAct2 VLM training modes: "
+                f"train_mode_vlm={self.train_mode_vlm!r}, legacy mode={legacy_train_mode!r}."
+            )
         if (self.joint_signs is None) != (self.joint_offsets is None):
             raise ValueError("joint_signs and joint_offsets must both be set or both be None.")
         if self.joint_signs is not None and len(self.joint_signs) != len(self.joint_offsets):
@@ -150,12 +170,18 @@ class MolmoAct2Config(PreTrainedConfig):
             raise ValueError("MolmoAct2 action_mode='discrete' cannot run continuous inference.")
         if self.inference_action_mode == "discrete" and self.action_mode == "continuous":
             raise ValueError("MolmoAct2 action_mode='continuous' cannot run discrete inference.")
-        if self.train_action_expert_only and self.action_mode != "continuous":
-            raise ValueError("MolmoAct2 train_action_expert_only requires action_mode='continuous'.")
-        if self.train_action_expert_only and self.enable_lora_vlm:
-            raise ValueError("MolmoAct2 train_action_expert_only is incompatible with enable_lora_vlm.")
-        if self.enable_lora_action_expert and not self.enable_lora_vlm:
-            raise ValueError("MolmoAct2 enable_lora_action_expert requires enable_lora_vlm.")
+        if self.train_mode_vlm not in {"fft", "lora", "freeze"}:
+            raise ValueError(
+                f"Unsupported train_mode_vlm={self.train_mode_vlm!r}. "
+                "Expected one of {'fft', 'lora', 'freeze'}."
+            )
+        if self.train_mode_vlm == "freeze" and self.action_mode != "continuous":
+            raise ValueError("MolmoAct2 train_mode_vlm='freeze' requires action_mode='continuous'.")
+        if self.enable_lora_action_expert and self.train_mode_vlm != "lora":
+            raise ValueError(
+                "Deprecated enable_lora_action_expert=True requires train_mode_vlm='lora' "
+                "(or legacy enable_lora_vlm=True)."
+            )
         if self.chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}.")
         if self.n_action_steps < 1:
@@ -170,6 +196,8 @@ class MolmoAct2Config(PreTrainedConfig):
             raise ValueError(
                 f"Unsupported model_dtype={self.model_dtype!r}. Expected 'float32', 'bfloat16', or 'float16'."
             )
+        if not 0 <= self.llm_residual_dropout <= 1:
+            raise ValueError(f"llm_residual_dropout must be in [0, 1], got {self.llm_residual_dropout}.")
         if self.lora_rank < 1:
             raise ValueError(f"lora_rank must be >= 1, got {self.lora_rank}.")
         if self.lora_alpha < 1:
