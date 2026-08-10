@@ -85,12 +85,18 @@ class ExecutionWindowAdapter:
     def __init__(self) -> None:
         self.inner = _adapter()
         self.decode_lengths: list[int] = []
+        self.decode_first_rows: list[np.ndarray] = []
+        self.decode_left_seeds: list[np.ndarray] = []
+        self.decode_right_seeds: list[np.ndarray] = []
 
     def build_query(self, observation: dict, previous_observation: dict | None):
         return self.inner.build_query(observation, previous_observation)
 
     def decode_action_chunk(self, actions: np.ndarray, query):
         self.decode_lengths.append(len(actions))
+        self.decode_first_rows.append(np.asarray(actions[0]).copy())
+        self.decode_left_seeds.append(query.left_joints.copy())
+        self.decode_right_seeds.append(query.right_joints.copy())
         return self.inner.decode_action_chunk(actions, query)
 
 
@@ -348,7 +354,7 @@ def test_specialized_engine_runs_transport_and_returns_yam_actions():
         assert action is not None
         assert action.shape == (14,)
         assert np.allclose(action.numpy(), list(_observation().values()))
-        assert adapter.decode_lengths == [24]
+        assert adapter.decode_lengths == [15]
         assert not engine.failed
     finally:
         engine.stop()
@@ -373,7 +379,7 @@ def test_specialized_engine_latency_aligns_model_rows_before_rate_limiting():
         image_encoding=ImageEncoding.JPEG,
         camera_calibration_sha256={},
     )
-    adapter = _adapter()
+    adapter = ExecutionWindowAdapter()
     engine = YamCurrentRelativeR6DRemoteInferenceEngine(
         settings=settings,
         yam_settings=YamCurrentRelativeR6DSettings(),
@@ -407,15 +413,20 @@ def test_specialized_engine_latency_aligns_model_rows_before_rate_limiting():
 
     decoded = engine._prepare_chunk_for_execution(chunk, snapshot)
     engine._latest_observation = snapshot
-    engine._last_dispatched_action = np.asarray(
-        [observation[key] for key in YAM_SCALAR_KEYS], dtype=np.float64
-    )
+    last_dispatched = np.asarray([observation[key] for key in YAM_SCALAR_KEYS], dtype=np.float64)
+    last_dispatched[3] = 0.7
+    last_dispatched[10] = -0.4
+    engine._last_dispatched_action = last_dispatched
     executable = engine._future_actions_for_execution(decoded, elapsed_steps=5)
 
-    assert decoded.actions.shape == (24, 14)
+    assert decoded.actions.shape == (24, 20)
+    assert adapter.decode_lengths == [15]
+    assert adapter.decode_first_rows[0][0] == pytest.approx(0.09)
+    assert adapter.decode_left_seeds[0][3] == pytest.approx(0.7)
+    assert adapter.decode_right_seeds[0][3] == pytest.approx(-0.4)
     assert executable.shape == (19, 14)
     assert engine._commit_length_for_actions(len(executable)) == 15
-    assert np.allclose(executable[-1], decoded.actions[19])
-    assert not np.allclose(executable[-1], decoded.actions[-1])
+    assert executable[-1, 0] == pytest.approx(0.3)
+    assert executable[-1, 3] == pytest.approx(0.7)
     dispatch_steps = np.diff(np.vstack((engine._last_dispatched_action, executable)), axis=0)
     assert np.abs(dispatch_steps[:, [*range(6), *range(7, 13)]]).max() <= 0.02 + 1e-7

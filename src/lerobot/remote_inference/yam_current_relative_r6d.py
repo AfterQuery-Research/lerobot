@@ -177,9 +177,17 @@ def rate_limit_action_chunk(
         gripper_dispatches = int(np.ceil(max(0.0, gripper_distance - 1e-9) / max_gripper_delta))
         dispatches = max(1, joint_dispatches, gripper_dispatches)
         if dispatches > max_dispatches_per_waypoint:
+            joint_offset = int(
+                joint_indices[np.argmax(np.abs(target[joint_indices] - previous[joint_indices]))]
+            )
+            gripper_offset = int(
+                gripper_indices[np.argmax(np.abs(target[gripper_indices] - previous[gripper_indices]))]
+            )
             raise ValueError(
                 f"current-relative waypoint {row_index + 1} requires {dispatches} dispatches; "
-                f"limit is {max_dispatches_per_waypoint}"
+                f"limit is {max_dispatches_per_waypoint}; "
+                f"largest joint transition is {YAM_SCALAR_KEYS[joint_offset]}={joint_distance:.4f} rad, "
+                f"largest gripper transition is {YAM_SCALAR_KEYS[gripper_offset]}={gripper_distance:.4f}"
             )
         delta = target - previous
         expanded.extend(previous + delta * (step / dispatches) for step in range(1, dispatches + 1))
