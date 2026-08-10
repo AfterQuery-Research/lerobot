@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 import pytest
+import torch
 
 from lerobot.datasets.umi_current_relative import (
     UMI_CURRENTREL_ACTION_NAMES,
@@ -20,13 +21,14 @@ from lerobot.remote_inference.backend import (
 from lerobot.remote_inference.schema import ImageEncoding, PolicyActionChunk
 from lerobot.remote_inference.server import RemotePolicyServerConfig, create_grpc_server
 from lerobot.remote_inference.yam_current_relative_r6d import (
+    YamActionTransitionError,
     YamCurrentRelativeR6DAdapter,
     YamJointProgressWatchdog,
     prepare_policy_image,
     rate_limit_action_chunk,
 )
 from lerobot.remote_inference.yam_umi_ee_bridge import YAM_SCALAR_KEYS, GripperMap, IkResidualError
-from lerobot.rollout.inference.remote import RemoteEngineSettings, _ObservationSnapshot
+from lerobot.rollout.inference.remote import RemoteEngineSettings, _ObservationSnapshot, _PendingChunk
 from lerobot.rollout.inference.yam_current_relative_r6d import (
     YamCurrentRelativeR6DRemoteInferenceEngine,
     YamCurrentRelativeR6DSettings,
@@ -430,3 +432,149 @@ def test_specialized_engine_latency_aligns_model_rows_before_rate_limiting():
     assert executable[-1, 3] == pytest.approx(0.7)
     dispatch_steps = np.diff(np.vstack((engine._last_dispatched_action, executable)), axis=0)
     assert np.abs(dispatch_steps[:, [*range(6), *range(7, 13)]]).max() <= 0.02 + 1e-7
+
+
+def test_discontinuous_replacement_keeps_validated_tail_and_requests_fresh_chunk(caplog):
+    settings = RemoteEngineSettings(
+        server_address="127.0.0.1:1",
+        schema_id="ignored-by-specialized-engine",
+        requested_model_id="test/currentrel-r6d",
+        client_instance_id="test-client",
+        connect_timeout_s=1.0,
+        inference_timeout_s=1.0,
+        max_message_bytes=8 * 1024 * 1024,
+        jpeg_quality=90,
+        tls_root_cert_path=None,
+        tls_client_cert_path=None,
+        tls_client_key_path=None,
+        tls_server_name_override=None,
+        execution_horizon=15,
+        image_encoding=ImageEncoding.JPEG,
+        camera_calibration_sha256={},
+    )
+    adapter = ExecutionWindowAdapter()
+    engine = YamCurrentRelativeR6DRemoteInferenceEngine(
+        settings=settings,
+        yam_settings=YamCurrentRelativeR6DSettings(),
+        robot_wrapper=FakeRobotWrapper(),
+        dataset_features={},
+        ordered_action_keys=list(YAM_SCALAR_KEYS),
+        task="Put all oranges in the bowl",
+        fps=30.0,
+        adapter=adapter,
+    )
+    observation = {
+        **_observation(),
+        "left": np.zeros((720, 1280, 3), dtype=np.uint8),
+        "right": np.zeros((720, 1280, 3), dtype=np.uint8),
+    }
+    query_sequence = 7
+    engine._queries[query_sequence] = adapter.build_query(observation, None)
+    engine._latest_observation = _ObservationSnapshot(
+        sequence=query_sequence + 1,
+        capture_tick=15,
+        capture_monotonic_ns=2,
+        values=observation,
+    )
+    engine._last_submitted_sequence = query_sequence
+    engine._last_dispatched_action = np.asarray(
+        [observation[key] for key in YAM_SCALAR_KEYS], dtype=np.float64
+    )
+
+    rows = np.stack([_identity_action_row()] * 24)
+    rows[:, 0] = 0.5
+    chunk = PolicyActionChunk(
+        observation_sequence=query_sequence,
+        first_action_tick=14,
+        actions=rows,
+        model_fingerprint="test",
+    )
+    old_tail = [engine._last_dispatched_action.copy() for _ in range(3)]
+    for index, action in enumerate(old_tail, start=1):
+        action[0] += index * 0.01
+    engine._action_queue.extend(torch.from_numpy(action.copy()) for action in old_tail)
+    engine._active_chunk_sequence = 3
+    engine._active_chunk_actions_sent = 15
+    engine._current_tick = 15
+    engine._switch_tick = 15
+    engine._request_tick = 15
+    engine._pending_chunk = _PendingChunk(chunk=chunk, round_trip_ns=250_000_000)
+
+    with engine._lock:
+        activated = engine._activate_pending_chunk_locked()
+        should_request = engine._should_request_locked()
+
+    assert not activated
+    assert engine._pending_chunk is None
+    assert engine._active_chunk_sequence == 3
+    assert engine._active_chunk_actions_sent == 15
+    assert len(engine._action_queue) == len(old_tail)
+    assert all(
+        np.allclose(queued.numpy(), expected)
+        for queued, expected in zip(engine._action_queue, old_tail, strict=True)
+    )
+    assert should_request
+    assert "keeping 3 validated actions from active chunk 3" in caplog.text
+    assert "requires 26 dispatches" in caplog.text
+
+
+def test_discontinuous_chunk_without_validated_tail_still_fails_closed():
+    settings = RemoteEngineSettings(
+        server_address="127.0.0.1:1",
+        schema_id="ignored-by-specialized-engine",
+        requested_model_id="test/currentrel-r6d",
+        client_instance_id="test-client",
+        connect_timeout_s=1.0,
+        inference_timeout_s=1.0,
+        max_message_bytes=8 * 1024 * 1024,
+        jpeg_quality=90,
+        tls_root_cert_path=None,
+        tls_client_cert_path=None,
+        tls_client_key_path=None,
+        tls_server_name_override=None,
+        execution_horizon=15,
+        image_encoding=ImageEncoding.JPEG,
+        camera_calibration_sha256={},
+    )
+    adapter = ExecutionWindowAdapter()
+    engine = YamCurrentRelativeR6DRemoteInferenceEngine(
+        settings=settings,
+        yam_settings=YamCurrentRelativeR6DSettings(),
+        robot_wrapper=FakeRobotWrapper(),
+        dataset_features={},
+        ordered_action_keys=list(YAM_SCALAR_KEYS),
+        task="Put all oranges in the bowl",
+        fps=30.0,
+        adapter=adapter,
+    )
+    observation = {
+        **_observation(),
+        "left": np.zeros((720, 1280, 3), dtype=np.uint8),
+        "right": np.zeros((720, 1280, 3), dtype=np.uint8),
+    }
+    sequence = 7
+    engine._queries[sequence] = adapter.build_query(observation, None)
+    engine._latest_observation = _ObservationSnapshot(
+        sequence=sequence,
+        capture_tick=15,
+        capture_monotonic_ns=2,
+        values=observation,
+    )
+    engine._last_dispatched_action = np.asarray(
+        [observation[key] for key in YAM_SCALAR_KEYS], dtype=np.float64
+    )
+    rows = np.stack([_identity_action_row()] * 24)
+    rows[:, 0] = 0.5
+    chunk = PolicyActionChunk(
+        observation_sequence=sequence,
+        first_action_tick=14,
+        actions=rows,
+        model_fingerprint="test",
+    )
+    engine._active_chunk_sequence = 3
+    engine._current_tick = 15
+    engine._switch_tick = 15
+    engine._pending_chunk = _PendingChunk(chunk=chunk, round_trip_ns=250_000_000)
+
+    with engine._lock, pytest.raises(YamActionTransitionError, match="requires 26 dispatches"):
+        engine._activate_pending_chunk_locked()

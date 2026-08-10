@@ -414,7 +414,11 @@ removed before IK, and the first retained row is solved from the latest
 dispatched joint target. Each decoded waypoint is expanded into a
 vector-preserving trajectory with at most `0.02` radians of joint motion and
 `0.05` normalized gripper motion per dispatch. A waypoint requiring more than
-16 dispatches fails closed. The robot's `0.10` joint bound remains a second,
+16 dispatches is treated as a discontinuous prediction. If it belongs to a
+replacement chunk and the active chunk still has a validated tail, the client
+rejects the replacement, continues that tail, and immediately requests a fresh
+prediction. The first chunk, or a discontinuity after the validated tail is
+exhausted, still fails closed. The robot's `0.10` joint bound remains a second,
 downstream safety limit.
 If measured joint error does not decrease for 90 consecutive dispatched
 targets, the progress watchdog stops inference and triggers the same fail-closed

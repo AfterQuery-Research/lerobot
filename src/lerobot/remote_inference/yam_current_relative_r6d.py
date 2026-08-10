@@ -95,6 +95,10 @@ class RateLimitedActionChunk:
     dispatches_per_waypoint: np.ndarray
 
 
+class YamActionTransitionError(ValueError):
+    """A finite YAM waypoint cannot be reached within the configured dispatch cap."""
+
+
 @dataclass
 class YamJointProgressWatchdog:
     max_hold_steps: int = 90
@@ -183,7 +187,7 @@ def rate_limit_action_chunk(
             gripper_offset = int(
                 gripper_indices[np.argmax(np.abs(target[gripper_indices] - previous[gripper_indices]))]
             )
-            raise ValueError(
+            raise YamActionTransitionError(
                 f"current-relative waypoint {row_index + 1} requires {dispatches} dispatches; "
                 f"limit is {max_dispatches_per_waypoint}; "
                 f"largest joint transition is {YAM_SCALAR_KEYS[joint_offset]}={joint_distance:.4f} rad, "
@@ -415,6 +419,7 @@ __all__ = [
     "YAM_CURRENTREL_CAMERA_KEYS",
     "YAM_CURRENTREL_SCHEMA_ID",
     "YAM_CURRENTREL_STATE_NAMES",
+    "YamActionTransitionError",
     "YamJointProgressWatchdog",
     "YamCurrentRelativeQuery",
     "YamCurrentRelativeR6DAdapter",

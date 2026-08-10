@@ -31,6 +31,7 @@ from lerobot.remote_inference.yam_current_relative_r6d import (
     YAM_CURRENTREL_CAMERA_KEYS,
     YAM_CURRENTREL_SCHEMA_ID,
     YAM_CURRENTREL_STATE_NAMES,
+    YamActionTransitionError,
     YamCurrentRelativeQuery,
     YamCurrentRelativeR6DAdapter,
     YamJointProgressWatchdog,
@@ -323,6 +324,11 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
             float(np.rad2deg(decoded.orientation_residual_rad.max())),
         )
         return executable
+
+    def _can_reject_pending_chunk_locked(self, exc: Exception) -> bool:
+        """Keep executing a validated tail when a replacement starts with a discontinuity."""
+
+        return isinstance(exc, YamActionTransitionError)
 
     def get_action(self, obs_frame: dict | None):
         self._check_dispatch_progress()

@@ -363,7 +363,23 @@ class RemoteInferenceEngine(InferenceEngine):
 
         previous_actions_sent = self._active_chunk_actions_sent
         previous_switch_tick = self._switch_tick
-        future = self._future_actions_for_execution(chunk, elapsed_steps)
+        try:
+            future = self._future_actions_for_execution(chunk, elapsed_steps)
+        except Exception as exc:
+            has_safe_tail = self._active_chunk_sequence is not None and bool(self._action_queue)
+            if not has_safe_tail or not self._can_reject_pending_chunk_locked(exc):
+                raise
+            self._switch_tick = self._current_tick
+            self._request_tick = self._current_tick
+            logger.warning(
+                "Rejected remote chunk %d at execution boundary; keeping %d validated actions "
+                "from active chunk %d and requesting a fresh prediction: %s",
+                chunk.observation_sequence,
+                len(self._action_queue),
+                self._active_chunk_sequence,
+                exc,
+            )
+            return False
         self._action_queue.clear()
         self._action_queue.extend(torch.from_numpy(action.copy()) for action in future)
         self._active_chunk_sequence = chunk.observation_sequence
@@ -408,6 +424,12 @@ class RemoteInferenceEngine(InferenceEngine):
         """Return the number of queued control ticks committed at activation."""
 
         return min(self._settings.execution_horizon, action_count)
+
+    def _can_reject_pending_chunk_locked(self, exc: Exception) -> bool:
+        """Return whether a bad replacement chunk may be skipped while a safe tail remains."""
+
+        del exc
+        return False
 
     def _future_actions_for_execution(
         self,
