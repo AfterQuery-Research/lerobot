@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -56,6 +57,8 @@ YAM_CURRENTREL_SCHEMA_ID = UMI_CURRENTREL_ONSET_V3_SCHEMA_ID
 YAM_CURRENTREL_STATE_NAMES = UMI_CURRENTREL_STATE_NAMES
 YAM_CURRENTREL_ACTION_NAMES = UMI_CURRENTREL_ACTION_NAMES
 YAM_CURRENTREL_CAMERA_KEYS = ("umi1", "umi2")
+
+logger = logging.getLogger(__name__)
 
 
 class ArmKinematics(Protocol):
@@ -343,37 +346,47 @@ class YamCurrentRelativeR6DAdapter:
         arm_slices = (LEFT_STATE_SLICE, RIGHT_STATE_SLICE)
         flange_to_tcp_inverse = invert_rigid_transform(self.flange_to_tcp)
 
+        decoded_rows = 0
         for row_index, row in enumerate(rows):
-            solutions = []
-            for arm_index, (arm_slice, anchor, solver) in enumerate(
-                zip(arm_slices, anchors, solvers, strict=True)
-            ):
-                arm_name = "left" if arm_index == 0 else "right"
-                relative_tcp = decode_relative_pose(row[arm_slice.start : arm_slice.stop - 1])
-                target_tcp = anchor @ relative_tcp
-                target_flange = target_tcp @ flange_to_tcp_inverse
-                try:
+            try:
+                solutions = []
+                for arm_index, (arm_slice, anchor, solver) in enumerate(
+                    zip(arm_slices, anchors, solvers, strict=True)
+                ):
+                    arm_name = "left" if arm_index == 0 else "right"
+                    relative_tcp = decode_relative_pose(row[arm_slice.start : arm_slice.stop - 1])
+                    target_tcp = anchor @ relative_tcp
+                    target_flange = target_tcp @ flange_to_tcp_inverse
                     solution = np.asarray(solver.ik(target_flange, seeds[arm_index], check=True))
-                except IkResidualError as exc:
-                    relative_xyz = np.array2string(relative_tcp[:3, 3], precision=5, separator=",")
-                    raise IkResidualError(
-                        f"action row {row_index + 1}/{rows.shape[0]}, {arm_name} arm, "
-                        f"relative TCP translation {relative_xyz} m: {exc}"
-                    ) from exc
-                self._validate_joint_solution(solution, arm=arm_name)
-                residuals[row_index, arm_index] = solver.residual(solution, target_flange)
-                seeds[arm_index] = solution
-                solutions.append(solution)
+                    self._validate_joint_solution(solution, arm=arm_name)
+                    residuals[row_index, arm_index] = solver.residual(solution, target_flange)
+                    seeds[arm_index] = solution
+                    solutions.append(solution)
+            except IkResidualError as exc:
+                relative_xyz = np.array2string(relative_tcp[:3, 3], precision=5, separator=",")
+                contextual_error = IkResidualError(
+                    f"action row {row_index + 1}/{rows.shape[0]}, {arm_name} arm, "
+                    f"relative TCP translation {relative_xyz} m: {exc}"
+                )
+                if row_index == 0:
+                    raise contextual_error from exc
+                logger.warning(
+                    "Truncating current-relative action chunk to %d valid rows: %s",
+                    row_index,
+                    contextual_error,
+                )
+                break
 
             decoded[row_index, :6] = solutions[0]
             decoded[row_index, 6] = self.gripper.umi_to_yam(row[LEFT_STATE_SLICE.stop - 1], left=True)
             decoded[row_index, 7:13] = solutions[1]
             decoded[row_index, 13] = self.gripper.umi_to_yam(row[RIGHT_STATE_SLICE.stop - 1], left=False)
+            decoded_rows += 1
 
         return DecodedActionChunk(
-            actions=np.ascontiguousarray(decoded, dtype=np.float32),
-            position_residual_m=np.ascontiguousarray(residuals[:, :, 0], dtype=np.float64),
-            orientation_residual_rad=np.ascontiguousarray(residuals[:, :, 1], dtype=np.float64),
+            actions=np.ascontiguousarray(decoded[:decoded_rows], dtype=np.float32),
+            position_residual_m=np.ascontiguousarray(residuals[:decoded_rows, :, 0], dtype=np.float64),
+            orientation_residual_rad=np.ascontiguousarray(residuals[:decoded_rows, :, 1], dtype=np.float64),
         )
 
     def _validate_joint_solution(self, solution: np.ndarray, *, arm: str) -> None:

@@ -276,7 +276,10 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
         model_joint_steps = np.diff(np.vstack((initial_joints, decoded_joints)), axis=0)
         executable_joints = np.concatenate((executable[:, :6], executable[:, 7:13]), axis=1)
         dispatch_joint_steps = np.diff(np.vstack((initial_joints, executable_joints)), axis=0)
-        model_translations = np.concatenate((model_actions[:, :3], model_actions[:, 10:13]), axis=1)
+        valid_model_actions = model_actions[: decoded.actions.shape[0]]
+        model_translations = np.concatenate(
+            (valid_model_actions[:, :3], valid_model_actions[:, 10:13]), axis=1
+        )
         logger.info(
             "Decoded current-relative chunk %d: model_rows=%d/%d dispatches=%d "
             "max_dispatches_per_waypoint=%d max_translation=%.4fm "
@@ -284,7 +287,7 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
             "max_ik_position_residual=%.3fmm "
             "max_ik_orientation_residual=%.3fdeg",
             chunk.observation_sequence,
-            model_actions.shape[0],
+            decoded.actions.shape[0],
             chunk.actions.shape[0],
             executable.shape[0],
             int(rate_limited.dispatches_per_waypoint.max()),

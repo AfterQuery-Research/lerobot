@@ -58,6 +58,18 @@ class FailingKinematics(CartesianFakeKinematics):
         raise IkResidualError("test residual")
 
 
+class FailOnCallKinematics(CartesianFakeKinematics):
+    def __init__(self, fail_on_call: int) -> None:
+        self.fail_on_call = fail_on_call
+        self.calls = 0
+
+    def ik(self, target_pose: np.ndarray, seed_rad: np.ndarray, *, check: bool = True) -> np.ndarray:
+        self.calls += 1
+        if self.calls == self.fail_on_call:
+            raise IkResidualError("test residual")
+        return super().ik(target_pose, seed_rad, check=check)
+
+
 def _adapter() -> YamCurrentRelativeR6DAdapter:
     return YamCurrentRelativeR6DAdapter(
         left=CartesianFakeKinematics(),
@@ -143,6 +155,24 @@ def test_ik_failure_identifies_action_row_arm_and_relative_target():
         match=r"action row 1/1, left arm, relative TCP translation \[ 0.01,-0.02, 0.03\] m",
     ):
         adapter.decode_action_chunk(row[None, :], query)
+
+
+def test_ik_failure_truncates_only_the_invalid_action_suffix(caplog):
+    adapter = YamCurrentRelativeR6DAdapter(
+        left=CartesianFakeKinematics(),
+        right=FailOnCallKinematics(fail_on_call=3),
+        flange_to_tcp=np.eye(4),
+        gripper=GripperMap(a_left=1.0, b_left=0.0, a_right=1.0, b_right=0.0),
+    )
+    rows = np.stack([_identity_action_row()] * 4)
+    query = adapter.build_query(_observation(), None)
+
+    decoded = adapter.decode_action_chunk(rows, query)
+
+    assert decoded.actions.shape == (2, 14)
+    assert decoded.position_residual_m.shape == (2, 2)
+    assert decoded.orientation_residual_rad.shape == (2, 2)
+    assert "Truncating current-relative action chunk to 2 valid rows" in caplog.text
 
 
 def test_current_relative_ik_uses_ten_refinement_iterations_by_default():
