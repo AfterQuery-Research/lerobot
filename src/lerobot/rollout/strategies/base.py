@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 from lerobot.utils.robot_utils import precise_sleep
@@ -49,6 +50,13 @@ class BaseStrategy(RolloutStrategy):
         control_interval = interpolator.get_control_interval(cfg.fps)
 
         start_time = time.perf_counter()
+        if self.config.require_operator_start:
+            if not sys.stdin.isatty():
+                raise RuntimeError("operator start confirmation requires an interactive terminal")
+            input(
+                "Verify the start pose, camera views, scene clearance, and physical stop. "
+                "Press Enter to begin policy motion..."
+            )
         engine.resume()
         logger.info("Base strategy control loop started")
 

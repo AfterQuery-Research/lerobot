@@ -47,6 +47,7 @@ from .inference import (
     RTCInferenceEngine,
     SyncInferenceConfig,
     SyncInferenceEngine,
+    YamCurrentRelativeR6DRemoteInferenceConfig,
     create_inference_engine,
 )
 from .strategies import (
@@ -91,6 +92,7 @@ __all__ = [
     "SentryStrategyConfig",
     "SyncInferenceConfig",
     "SyncInferenceEngine",
+    "YamCurrentRelativeR6DRemoteInferenceConfig",
     "build_rollout_context",
     "create_inference_engine",
     "create_strategy",

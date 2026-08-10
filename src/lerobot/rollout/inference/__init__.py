@@ -24,6 +24,7 @@ from .factory import (
     RemoteInferenceConfig,
     RTCInferenceConfig,
     SyncInferenceConfig,
+    YamCurrentRelativeR6DRemoteInferenceConfig,
     create_inference_engine,
 )
 from .rtc import RTCInferenceEngine
@@ -37,5 +38,6 @@ __all__ = [
     "RemoteInferenceConfig",
     "SyncInferenceConfig",
     "SyncInferenceEngine",
+    "YamCurrentRelativeR6DRemoteInferenceConfig",
     "create_inference_engine",
 ]

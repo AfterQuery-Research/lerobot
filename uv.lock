@@ -3267,6 +3267,7 @@ kinematics = [
     { name = "cmeel-tinyxml2" },
     { name = "cmeel-urdfdom" },
     { name = "placo" },
+    { name = "scipy" },
 ]
 lekiwi = [
     { name = "deepdiff" },
@@ -3603,6 +3604,7 @@ requires-dist = [
     { name = "lerobot", extras = ["robstride"], marker = "extra == 'all'" },
     { name = "lerobot", extras = ["sarm"], marker = "extra == 'all'" },
     { name = "lerobot", extras = ["scipy-dep"], marker = "extra == 'aloha'" },
+    { name = "lerobot", extras = ["scipy-dep"], marker = "extra == 'kinematics'" },
     { name = "lerobot", extras = ["scipy-dep"], marker = "extra == 'libero'" },
     { name = "lerobot", extras = ["scipy-dep"], marker = "extra == 'metaworld'" },
     { name = "lerobot", extras = ["scipy-dep"], marker = "extra == 'molmoact2'" },

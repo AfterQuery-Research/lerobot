@@ -30,7 +30,12 @@ from lerobot.robots.config import RobotConfig
 from lerobot.teleoperators.config import TeleoperatorConfig
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
-from .inference import InferenceEngineConfig, RemoteInferenceConfig, SyncInferenceConfig
+from .inference import (
+    InferenceEngineConfig,
+    RemoteInferenceConfig,
+    SyncInferenceConfig,
+    YamCurrentRelativeR6DRemoteInferenceConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +62,7 @@ class RolloutStrategyConfig(draccus.ChoiceRegistry, abc.ABC):
 class BaseStrategyConfig(RolloutStrategyConfig):
     """Autonomous rollout with no data recording."""
 
-    pass
+    require_operator_start: bool = False
 
 
 @RolloutStrategyConfig.register_subclass("action_probe")
@@ -364,6 +369,13 @@ class RolloutConfig:
         # --- Policy loading ---
         if self.robot is None:
             raise ValueError("--robot.type is required for rollout")
+
+        if (
+            isinstance(self.inference, YamCurrentRelativeR6DRemoteInferenceConfig)
+            and isinstance(self.strategy, BaseStrategyConfig)
+            and not self.strategy.require_operator_start
+        ):
+            raise ValueError("current-relative YAM motion requires --strategy.require_operator_start=true")
 
         policy_path = parser.get_path_arg("policy")
         is_remote = isinstance(self.inference, RemoteInferenceConfig)

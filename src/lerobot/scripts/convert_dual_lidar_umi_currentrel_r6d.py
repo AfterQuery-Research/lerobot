@@ -40,12 +40,15 @@ import pyarrow.parquet as pq
 from scipy.spatial.transform import Rotation
 
 from lerobot.datasets.umi_current_relative import (
+    UMI_CURRENTREL_ACTION_NAMES,
     UMI_CURRENTREL_HELPER_DIM,
     UMI_CURRENTREL_HORIZON,
     UMI_CURRENTREL_METADATA_PATH,
+    UMI_CURRENTREL_POSE_R6D_NAMES,
     UMI_CURRENTREL_SCHEMA_ID,
     UMI_CURRENTREL_SPLIT_PATH,
     UMI_CURRENTREL_STATE_DIM,
+    UMI_CURRENTREL_STATE_NAMES,
     UMI_TCP_WINDOW_KEY,
     matrix_to_rotation_6d,
     pack_tcp_and_gripper,
@@ -80,29 +83,9 @@ GRIPPER_OUTLIER_THRESHOLD_MM = 126.0
 # provenance so a historical LiDAR lever arm cannot be applied a second time.
 STORED_POSE_T_TCP = np.eye(4, dtype=np.float64)
 
-POSE_R6D_NAMES = [
-    "relative_x_m",
-    "relative_y_m",
-    "relative_z_m",
-    "relative_r6d_col0_x",
-    "relative_r6d_col0_y",
-    "relative_r6d_col0_z",
-    "relative_r6d_col1_x",
-    "relative_r6d_col1_y",
-    "relative_r6d_col1_z",
-]
-STATE_NAMES = (
-    [f"left_previous_{name}" for name in POSE_R6D_NAMES]
-    + ["left_current_gripper"]
-    + [f"right_previous_{name}" for name in POSE_R6D_NAMES]
-    + ["right_current_gripper"]
-)
-ACTION_NAMES = (
-    [f"left_future_{name}" for name in POSE_R6D_NAMES]
-    + ["left_future_gripper"]
-    + [f"right_future_{name}" for name in POSE_R6D_NAMES]
-    + ["right_future_gripper"]
-)
+POSE_R6D_NAMES = list(UMI_CURRENTREL_POSE_R6D_NAMES)
+STATE_NAMES = list(UMI_CURRENTREL_STATE_NAMES)
+ACTION_NAMES = list(UMI_CURRENTREL_ACTION_NAMES)
 HELPER_NAMES = [
     "left_tcp_x_m",
     "left_tcp_y_m",

@@ -199,7 +199,7 @@ rebot = ["lerobot[motorbridge-dep]", "lerobot[motorbridge-smart-servo-dep]"]
 bi_yam = [
     "i2rt @ git+https://github.com/AfterQuery-Research/i2rt.git@e599e9db90d644db6efe0b16bb6fd7cb87c4272f",
 ]
-kinematics = ["lerobot[placo-dep]"]
+kinematics = ["lerobot[placo-dep]", "lerobot[scipy-dep]"]
 intelrealsense = [
     "pyrealsense2>=2.55.1.6486,<2.57.0 ; sys_platform != 'darwin' and platform_machine != 'aarch64' and platform_machine != 'arm64'",
     "pyrealsense2>=2.58.3.10794,<2.59.0 ; sys_platform == 'linux' and (platform_machine == 'aarch64' or platform_machine == 'arm64')",

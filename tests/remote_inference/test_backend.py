@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
-from lerobot.configs import FeatureType, PolicyFeature
+from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig
 from lerobot.policies.molmoact2.configuration_molmoact2 import MolmoAct2Config
 from lerobot.processor.rename_processor import RenameObservationsProcessorStep
 from lerobot.remote_inference import backend as backend_module
@@ -74,6 +74,77 @@ def test_saved_policy_loads_from_backend_path(monkeypatch, tmp_path):
     LeRobotPolicyBackend(LeRobotPolicyBackendConfig(pretrained_name_or_path=str(checkpoint), device="cpu"))
 
     assert loaded["path"] == str(checkpoint)
+
+
+def test_saved_molmoact2_base_checkpoint_can_be_overridden(monkeypatch):
+    policy_config = SimpleNamespace(
+        checkpoint_path="/private/training/base-model",
+        checkpoint_revision="private-revision",
+        model_dtype="bfloat16",
+        norm_tag=None,
+        inference_action_mode="continuous",
+        device="cuda",
+    )
+    monkeypatch.setattr(
+        PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: policy_config,
+    )
+
+    resolved = LeRobotPolicyBackend._load_policy_config(
+        LeRobotPolicyBackendConfig(
+            pretrained_name_or_path="public/fine-tune",
+            base_checkpoint_path="allenai/MolmoAct2-BimanualYAM",
+            base_checkpoint_revision="public-revision",
+            device="cpu",
+        )
+    )
+
+    assert resolved.checkpoint_path == "allenai/MolmoAct2-BimanualYAM"
+    assert resolved.checkpoint_revision == "public-revision"
+    assert resolved.device == "cpu"
+
+
+def test_saved_molmoact2_processor_receives_base_checkpoint_override(monkeypatch):
+    captured = {}
+
+    class FakePolicy:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+    policy_config = SimpleNamespace(type="fake", pretrained_revision=None)
+    monkeypatch.setattr(LeRobotPolicyBackend, "_load_policy_config", lambda self, config: policy_config)
+    monkeypatch.setattr(LeRobotPolicyBackend, "_build_manifest", lambda self: object())
+    monkeypatch.setattr(backend_module, "get_policy_class", lambda policy_type: FakePolicy)
+
+    def fake_processors(*args, **kwargs):
+        captured.update(kwargs)
+        return object(), object()
+
+    monkeypatch.setattr(backend_module, "make_pre_post_processors", fake_processors)
+
+    LeRobotPolicyBackend(
+        LeRobotPolicyBackendConfig(
+            pretrained_name_or_path="public/fine-tune",
+            base_checkpoint_path="allenai/MolmoAct2-BimanualYAM",
+            base_checkpoint_revision="public-revision",
+            device="cpu",
+        )
+    )
+
+    overrides = captured["preprocessor_overrides"]
+    assert overrides["device_processor"] == {"device": "cpu"}
+    assert overrides["molmoact2_pack_inputs"] == {
+        "checkpoint_path": "allenai/MolmoAct2-BimanualYAM",
+        "checkpoint_revision": "public-revision",
+    }
 
 
 class _SavedStateStats:

@@ -72,6 +72,7 @@ class _ObservationSnapshot:
     capture_tick: int
     capture_monotonic_ns: int
     values: dict[str, Any]
+    previous_values: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -269,12 +270,18 @@ class RemoteInferenceEngine(InferenceEngine):
                 capture_tick=self._current_tick,
                 capture_monotonic_ns=now_ns,
                 values={key: _copy_observation_value(value) for key, value in obs.items()},
+                previous_values=self._previous_values_for_snapshot(),
             )
             self._sequence += 1
             self._latest_observation = snapshot
             should_request = self._should_request_locked()
         if should_request:
             self._observation_ready.set()
+
+    def _previous_values_for_snapshot(self) -> dict[str, Any] | None:
+        """Return optional history needed by a specialized observation encoder."""
+
+        return None
 
     def get_action(self, obs_frame: dict | None) -> torch.Tensor | None:
         del obs_frame
@@ -356,7 +363,7 @@ class RemoteInferenceEngine(InferenceEngine):
 
         previous_actions_sent = self._active_chunk_actions_sent
         previous_switch_tick = self._switch_tick
-        future = chunk.actions[elapsed_steps:]
+        future = self._future_actions_for_execution(chunk, elapsed_steps)
         self._action_queue.clear()
         self._action_queue.extend(torch.from_numpy(action.copy()) for action in future)
         self._active_chunk_sequence = chunk.observation_sequence
@@ -396,6 +403,29 @@ class RemoteInferenceEngine(InferenceEngine):
                 self._settings.execution_horizon,
             )
         return True
+
+    def _future_actions_for_execution(
+        self,
+        chunk: PolicyActionChunk,
+        elapsed_steps: int,
+    ) -> np.ndarray:
+        """Select executable rows after latency alignment.
+
+        Specialized embodiment adapters may impose a hard row horizon without
+        changing the generic remote scheduler.
+        """
+
+        return chunk.actions[elapsed_steps:]
+
+    def _prepare_chunk_for_execution(
+        self,
+        chunk: PolicyActionChunk,
+        snapshot: _ObservationSnapshot,
+    ) -> PolicyActionChunk:
+        """Translate a validated model chunk into hardware action coordinates."""
+
+        del snapshot
+        return chunk
 
     def _make_policy_observation(
         self,
@@ -444,6 +474,7 @@ class RemoteInferenceEngine(InferenceEngine):
                 observation = self._make_policy_observation(snapshot, queue_depth)
                 request_started_ns = time.perf_counter_ns()
                 chunk = self._client.infer(observation)
+                chunk = self._prepare_chunk_for_execution(chunk, snapshot)
                 round_trip_ns = time.perf_counter_ns() - request_started_ns
                 if self._stop_event.is_set():
                     return

@@ -74,6 +74,30 @@ UMI_CURRENTREL_HORIZON = 24
 UMI_CURRENTREL_STATE_DIM = 20
 UMI_CURRENTREL_HELPER_DIM = 16
 
+UMI_CURRENTREL_POSE_R6D_NAMES = (
+    "relative_x_m",
+    "relative_y_m",
+    "relative_z_m",
+    "relative_r6d_col0_x",
+    "relative_r6d_col0_y",
+    "relative_r6d_col0_z",
+    "relative_r6d_col1_x",
+    "relative_r6d_col1_y",
+    "relative_r6d_col1_z",
+)
+UMI_CURRENTREL_STATE_NAMES = (
+    *(f"left_previous_{name}" for name in UMI_CURRENTREL_POSE_R6D_NAMES),
+    "left_current_gripper",
+    *(f"right_previous_{name}" for name in UMI_CURRENTREL_POSE_R6D_NAMES),
+    "right_current_gripper",
+)
+UMI_CURRENTREL_ACTION_NAMES = (
+    *(f"left_future_{name}" for name in UMI_CURRENTREL_POSE_R6D_NAMES),
+    "left_future_gripper",
+    *(f"right_future_{name}" for name in UMI_CURRENTREL_POSE_R6D_NAMES),
+    "right_future_gripper",
+)
+
 LEFT_STATE_SLICE = slice(0, 10)
 RIGHT_STATE_SLICE = slice(10, 20)
 

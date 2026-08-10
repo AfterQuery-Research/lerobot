@@ -140,10 +140,16 @@ class LeRobotPolicyBackendConfig:
     pretrained_name_or_path: str
     policy_type: str | None = None
     revision: str | None = None
+    base_checkpoint_path: str | None = None
+    base_checkpoint_revision: str | None = None
     device: str = "cuda"
     model_dtype: str | None = None
     norm_tag: str | None = None
     inference_action_mode: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.base_checkpoint_revision is not None and self.base_checkpoint_path is None:
+            raise ValueError("base_checkpoint_revision requires base_checkpoint_path")
 
 
 class LeRobotPolicyBackend(PolicyBackend):
@@ -176,6 +182,11 @@ class LeRobotPolicyBackend(PolicyBackend):
         # config itself downgrades to CPU gracefully. Actions are moved to CPU in infer(),
         # so pinning both pipelines to the serving device is safe.
         device_override = {"device_processor": {"device": config.device}}
+        if config.base_checkpoint_path is not None:
+            device_override["molmoact2_pack_inputs"] = {
+                "checkpoint_path": config.base_checkpoint_path,
+                "checkpoint_revision": config.base_checkpoint_revision,
+            }
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy_config,
             pretrained_path=None if config.policy_type == "molmoact2" else config.pretrained_name_or_path,
@@ -217,6 +228,11 @@ class LeRobotPolicyBackend(PolicyBackend):
             policy_config.norm_tag = config.norm_tag
         if config.inference_action_mode is not None and hasattr(policy_config, "inference_action_mode"):
             policy_config.inference_action_mode = config.inference_action_mode
+        if config.base_checkpoint_path is not None:
+            if not hasattr(policy_config, "checkpoint_path"):
+                raise ValueError("base_checkpoint_path is only supported by policies with checkpoint_path")
+            policy_config.checkpoint_path = config.base_checkpoint_path
+            policy_config.checkpoint_revision = config.base_checkpoint_revision
         policy_config.device = config.device
         return policy_config
 

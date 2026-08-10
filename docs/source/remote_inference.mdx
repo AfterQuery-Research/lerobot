@@ -34,10 +34,11 @@ uv sync --locked --extra remote --extra molmoact2
 uv sync --locked --extra remote --extra pi
 ```
 
-On the dual-YAM computer:
+On the dual-YAM computer, include `kinematics` when using an end-effector
+checkpoint:
 
 ```bash
-uv sync --locked --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
+uv sync --locked --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense --extra kinematics
 ```
 
 ## Start the server
@@ -62,6 +63,21 @@ policy configuration, normalization statistics, and observation rename map:
 ```bash
 uv run lerobot-policy-server \
     --policy.pretrained_name_or_path=ASethi04/pi05-BimanualYAM-oranges-uw-notop \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
+The dual-LiDAR UMI current-relative MolmoAct2 checkpoint also stores its
+fine-tuned policy and normalization statistics, but its published metadata
+retains the private path used for the base checkpoint during training. Override
+that path with the public base model when serving it:
+
+```bash
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path=ASethi04/MolmoAct2-BimanualYAM-dual-lidar-umi-currentrel-r6d-onset-v3-12k \
+    --policy.base_checkpoint_path=allenai/MolmoAct2-BimanualYAM \
+    --policy.base_checkpoint_revision=8dcbed66f2380e4393189c303ea72488eb9e63c2 \
     --policy.device=cuda \
     --host=0.0.0.0 \
     --port=8081
@@ -296,6 +312,45 @@ or call `robot.send_action`. Every returned target is written to
 To test the reset separately, under supervision, add
 `--strategy.reset_robot=true`. Returned policy actions are still discarded.
 
+### Current-relative Rotation6D checkpoint
+
+The current-relative checkpoint uses a different policy contract from the
+14-joint checkpoints above. It consumes the two physical side views as logical
+`umi1` and `umi2`, a 20-value measured end-effector state, and returns a
+24-by-20 end-effector trajectory. Use its dedicated inference adapter for both
+the no-motion probe and motion rollout:
+
+```bash
+MODEL_ID=ASethi04/MolmoAct2-BimanualYAM-dual-lidar-umi-currentrel-r6d-onset-v3-12k
+TASK="Put all oranges in the bowl"
+
+uv run lerobot-rollout \
+    --strategy.type=action_probe \
+    --strategy.reset_robot=false \
+    --strategy.action_log_path=outputs/yam-currentrel-actions.jsonl \
+    --inference.type=remote_yam_currentrel_r6d \
+    --inference.server_address="$SERVER" \
+    --inference.requested_model_id="$MODEL_ID" \
+    --inference.execution_horizon=15 \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.cameras="$CAMERAS" \
+    --task="$TASK" \
+    --fps=30 \
+    --duration=10
+```
+
+The adapter resolves `yam.urdf` from the installed i2rt package, computes the
+measured jaw-center transforms with FK, sends
+`inverse(T_current) @ T_previous`, and converts every returned row from
+`inverse(T_query) @ T_future` using the same fixed query pose. Rotation uses
+the first two matrix columns in Rotation6D order. Strict IK, IK residual, joint
+limit, schema, and finite-value checks run before any row can reach the robot.
+The probe connects to the physical arms and cameras but never arms the robot or
+sends a command.
+
 ## Run with motion
 
 The following command arms the robot, moves it to the configured reset pose,
@@ -323,6 +378,40 @@ uv run lerobot-rollout \
     --fps=30 \
     --duration=60
 ```
+
+For supervised motion with the current-relative checkpoint, use:
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=base \
+    --strategy.require_operator_start=true \
+    --enable_logging=true \
+    --return_to_initial_position=false \
+    --inference.type=remote_yam_currentrel_r6d \
+    --inference.server_address="$SERVER" \
+    --inference.requested_model_id="$MODEL_ID" \
+    --inference.execution_horizon=15 \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.max_joint_delta=0.02 \
+    --robot.max_gripper_delta=0.05 \
+    --robot.cameras="$CAMERAS" \
+    --task="$TASK" \
+    --display_data="$DISPLAY_DATA" \
+    --display_mode="$DISPLAY_MODE" \
+    --fps=30 \
+    --duration=60
+```
+
+After the reset finishes, the command waits for an interactive Enter press.
+Check the physical start pose, both side-camera views, object placement,
+clearance, and stop method before confirming. The adapter executes at most rows
+1 through 15 from each 24-row prediction and then requires a fresh observation.
+It does not use rows 16 through 24 as a fallback when a new prediction is late.
+On an inference, transport, schema, or strict IK failure, queued actions are
+cleared and the rollout disarms without commanding a return trajectory.
 
 MolmoAct2 predicts 30 future actions per request. `execution_horizon=15`
 commits the client to 15 latency-aligned actions from the active prediction
