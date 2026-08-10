@@ -334,6 +334,7 @@ def semantic_metadata(
     metadata["schema_version"] = 2
     metadata["dataset_name"] = OUTPUT_DATASET_NAME
     metadata["repository"] = OUTPUT_REPO_ID
+    metadata["padding_semantics"] = "supervise_clamped_future_rows"
     metadata["state_semantics"] = (
         "history_i(t) = inverse(T_tcp_i(t)) @ T_tcp_i(t-1); "
         "the onset-aligned local frame 0 history is exact identity"

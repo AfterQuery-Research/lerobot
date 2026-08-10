@@ -427,6 +427,7 @@ def semantic_metadata(
     metadata["schema_version"] = 3
     metadata["dataset_name"] = OUTPUT_DATASET_NAME
     metadata["repository"] = OUTPUT_REPO_ID
+    metadata["padding_semantics"] = "exclude_padded_future_rows"
     metadata["onset_alignment"]["removed_prefix_frames"] = {
         "train": 48_997 - EXPECTED_V2_TRAIN_FRAMES,
         "validation": 1_937 - EXPECTED_V2_VALIDATION_FRAMES,

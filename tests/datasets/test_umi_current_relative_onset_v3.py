@@ -181,6 +181,7 @@ def test_v3_semantics_record_suffix_padding_and_external_start_pose() -> None:
     )
 
     assert metadata["schema_id"] == UMI_CURRENTREL_ONSET_V3_SCHEMA_ID
+    assert metadata["padding_semantics"] == "exclude_padded_future_rows"
     assert metadata["dataset_name"] == OUTPUT_DATASET_NAME
     assert metadata["repository"] == OUTPUT_REPO_ID
     assert metadata["v3_suffix_cleanup"]["source_end_frame_exclusive_by_episode"] == {

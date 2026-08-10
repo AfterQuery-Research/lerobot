@@ -11,6 +11,8 @@ from scipy.spatial.transform import Rotation
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.umi_current_relative import (
+    PADDING_EXCLUDE_PADDED_FUTURE_ROWS,
+    PADDING_SUPERVISE_CLAMPED_FUTURE_ROWS,
     UMI_CURRENTREL_HELPER_DIM,
     UMI_CURRENTREL_HORIZON,
     UMI_CURRENTREL_METADATA_PATH,
@@ -314,13 +316,11 @@ def test_dataset_constructs_batch_after_query_and_preserves_camera_order(monkeyp
     monkeypatch.setattr(LeRobotDataset, "__getitem__", fake_getitem)
     dataset = object.__new__(UmiCurrentRelativeR6dDataset)
     dataset.action_horizon = UMI_CURRENTREL_HORIZON
+    dataset.padding_semantics = PADDING_SUPERVISE_CLAMPED_FUTURE_ROWS
     item = dataset[0]
     assert item[OBS_STATE].shape == (UMI_CURRENTREL_STATE_DIM,)
     assert item[ACTION].shape == (UMI_CURRENTREL_HORIZON, UMI_CURRENTREL_STATE_DIM)
-    assert torch.equal(
-        item[f"{ACTION}_is_pad"],
-        torch.tensor([False] * (len(tcp) - 1) + [True] * (UMI_CURRENTREL_HORIZON - len(tcp) + 1)),
-    )
+    assert f"{ACTION}_is_pad" not in item
     assert torch.equal(item["observation.images.umi1"], left_image)
     assert torch.equal(item["observation.images.umi2"], right_image)
     assert UMI_TCP_WINDOW_KEY not in item
@@ -328,7 +328,14 @@ def test_dataset_constructs_batch_after_query_and_preserves_camera_order(monkeyp
     batch = torch.utils.data.default_collate([item, item])
     assert batch[OBS_STATE].shape == (2, UMI_CURRENTREL_STATE_DIM)
     assert batch[ACTION].shape == (2, UMI_CURRENTREL_HORIZON, UMI_CURRENTREL_STATE_DIM)
-    assert batch[f"{ACTION}_is_pad"].shape == (2, UMI_CURRENTREL_HORIZON)
+    assert f"{ACTION}_is_pad" not in batch
+
+    dataset.padding_semantics = PADDING_EXCLUDE_PADDED_FUTURE_ROWS
+    masked_item = dataset[0]
+    assert torch.equal(
+        masked_item[f"{ACTION}_is_pad"],
+        torch.tensor([False] * (len(tcp) - 1) + [True] * (UMI_CURRENTREL_HORIZON - len(tcp) + 1)),
+    )
 
 
 def test_finite_quantile_normalized_values_and_initial_loss() -> None:

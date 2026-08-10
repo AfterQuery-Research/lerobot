@@ -206,6 +206,7 @@ def test_semantic_contract_preserves_tail_and_hardware_gripper_requirements() ->
     assert metadata["dataset_name"] == OUTPUT_DATASET_NAME
     assert metadata["repository"] == OUTPUT_REPO_ID
     assert metadata["schema_id"] == UMI_CURRENTREL_ONSET_SCHEMA_ID
+    assert metadata["padding_semantics"] == "supervise_clamped_future_rows"
     assert metadata["onset_alignment"]["translation_threshold_m"] == 0.002
     assert metadata["onset_alignment"]["rotation_threshold_deg"] == 1.0
     assert metadata["onset_alignment"]["consecutive_frames"] == 3

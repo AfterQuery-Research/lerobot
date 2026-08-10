@@ -367,6 +367,7 @@ def _semantic_metadata() -> dict:
         },
         "state_semantics": "history_i(t) = inverse(T_tcp_i(t)) @ T_tcp_i(t-1)",
         "action_semantics": "action_i(t,k) = inverse(T_tcp_i(t)) @ T_tcp_i(t+k), k=1..24",
+        "padding_semantics": "supervise_clamped_future_rows",
         "terminal_padding": "clamp t+k to final episode frame; all rows retain query-time T_tcp_i(t)",
         "gripper": {
             "input_units": "millimetres",

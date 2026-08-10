@@ -56,11 +56,18 @@ UMI_CURRENTREL_ONSET_V3_SCHEMA_ID = "dual-lidar-umi-currentrel-r6d-onset-v3"
 UMI_CURRENTREL_ONSET_V3_METADATA_PATH = Path("meta/umi_current_relative_r6d_onset_v3.json")
 UMI_CURRENTREL_SPLIT_PATH = Path("meta/split_manifest.json")
 UMI_TCP_WINDOW_KEY = "umi.tcp_and_gripper"
+PADDING_SUPERVISE_CLAMPED_FUTURE_ROWS = "supervise_clamped_future_rows"
+PADDING_EXCLUDE_PADDED_FUTURE_ROWS = "exclude_padded_future_rows"
 
 _UMI_CURRENTREL_SCHEMA_BY_METADATA_PATH = {
     UMI_CURRENTREL_METADATA_PATH: UMI_CURRENTREL_SCHEMA_ID,
     UMI_CURRENTREL_ONSET_METADATA_PATH: UMI_CURRENTREL_ONSET_SCHEMA_ID,
     UMI_CURRENTREL_ONSET_V3_METADATA_PATH: UMI_CURRENTREL_ONSET_V3_SCHEMA_ID,
+}
+_PADDING_SEMANTICS_BY_SCHEMA = {
+    UMI_CURRENTREL_SCHEMA_ID: PADDING_SUPERVISE_CLAMPED_FUTURE_ROWS,
+    UMI_CURRENTREL_ONSET_SCHEMA_ID: PADDING_SUPERVISE_CLAMPED_FUTURE_ROWS,
+    UMI_CURRENTREL_ONSET_V3_SCHEMA_ID: PADDING_EXCLUDE_PADDED_FUTURE_ROWS,
 }
 
 UMI_CURRENTREL_HORIZON = 24
@@ -309,6 +316,14 @@ def load_current_relative_metadata(root: str | Path) -> dict[str, Any]:
         )
     if int(metadata.get("action_horizon", -1)) != UMI_CURRENTREL_HORIZON:
         raise ValueError("UMI current-relative metadata must declare action_horizon=24")
+    required_padding_semantics = _PADDING_SEMANTICS_BY_SCHEMA[expected_schema]
+    padding_semantics = metadata.get("padding_semantics", required_padding_semantics)
+    if padding_semantics != required_padding_semantics:
+        raise ValueError(
+            f"schema {expected_schema!r} requires padding_semantics={required_padding_semantics!r}, "
+            f"got {padding_semantics!r}"
+        )
+    metadata["padding_semantics"] = padding_semantics
     return metadata
 
 
@@ -375,6 +390,7 @@ class UmiCurrentRelativeR6dDataset(LeRobotDataset):
             )
         self.current_relative_metadata = metadata
         self.action_horizon = action_horizon
+        self.padding_semantics = metadata["padding_semantics"]
         fps = int(metadata["fps"])
         helper_offsets = [offset / fps for offset in range(action_horizon + 1)]
         super().__init__(
@@ -424,5 +440,8 @@ class UmiCurrentRelativeR6dDataset(LeRobotDataset):
         # The action rows are k=1..H, so helper row zero (the query anchor) is
         # excluded and every beyond-episode future target is masked.
         item[ACTION] = torch.from_numpy(chunk.astype(np.float32, copy=False))
-        item[f"{ACTION}_is_pad"] = helper_pad_tensor[1:].clone()
+        if self.padding_semantics == PADDING_EXCLUDE_PADDED_FUTURE_ROWS:
+            item[f"{ACTION}_is_pad"] = helper_pad_tensor[1:].clone()
+        elif self.padding_semantics != PADDING_SUPERVISE_CLAMPED_FUTURE_ROWS:
+            raise RuntimeError(f"unsupported padding semantics {self.padding_semantics!r}")
         return item
