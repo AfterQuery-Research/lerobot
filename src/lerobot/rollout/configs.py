@@ -34,7 +34,6 @@ from .inference import (
     InferenceEngineConfig,
     RemoteInferenceConfig,
     SyncInferenceConfig,
-    YamCurrentRelativeR6DRemoteInferenceConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -369,13 +368,6 @@ class RolloutConfig:
         # --- Policy loading ---
         if self.robot is None:
             raise ValueError("--robot.type is required for rollout")
-
-        if (
-            isinstance(self.inference, YamCurrentRelativeR6DRemoteInferenceConfig)
-            and isinstance(self.strategy, BaseStrategyConfig)
-            and not self.strategy.require_operator_start
-        ):
-            raise ValueError("current-relative YAM motion requires --strategy.require_operator_start=true")
 
         policy_path = parser.get_path_arg("policy")
         is_remote = isinstance(self.inference, RemoteInferenceConfig)

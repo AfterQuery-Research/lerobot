@@ -17,7 +17,7 @@ from lerobot.remote_inference.backend import (
     DeterministicPolicyBackend,
     DeterministicPolicyBackendConfig,
 )
-from lerobot.remote_inference.schema import ImageEncoding
+from lerobot.remote_inference.schema import ImageEncoding, PolicyActionChunk
 from lerobot.remote_inference.server import RemotePolicyServerConfig, create_grpc_server
 from lerobot.remote_inference.yam_current_relative_r6d import (
     YamCurrentRelativeR6DAdapter,
@@ -26,7 +26,7 @@ from lerobot.remote_inference.yam_current_relative_r6d import (
     rate_limit_action_chunk,
 )
 from lerobot.remote_inference.yam_umi_ee_bridge import YAM_SCALAR_KEYS, GripperMap, IkResidualError
-from lerobot.rollout.inference.remote import RemoteEngineSettings
+from lerobot.rollout.inference.remote import RemoteEngineSettings, _ObservationSnapshot
 from lerobot.rollout.inference.yam_current_relative_r6d import (
     YamCurrentRelativeR6DRemoteInferenceEngine,
     YamCurrentRelativeR6DSettings,
@@ -91,8 +91,6 @@ class ExecutionWindowAdapter:
 
     def decode_action_chunk(self, actions: np.ndarray, query):
         self.decode_lengths.append(len(actions))
-        if len(actions) > 15:
-            raise AssertionError("diagnostic tail rows must not reach strict IK")
         return self.inner.decode_action_chunk(actions, query)
 
 
@@ -333,8 +331,73 @@ def test_specialized_engine_runs_transport_and_returns_yam_actions():
         assert action is not None
         assert action.shape == (14,)
         assert np.allclose(action.numpy(), list(_observation().values()))
-        assert adapter.decode_lengths == [15]
+        assert adapter.decode_lengths == [24]
         assert not engine.failed
     finally:
         engine.stop()
         server.stop(grace=0).wait()
+
+
+def test_specialized_engine_latency_aligns_model_rows_before_rate_limiting():
+    settings = RemoteEngineSettings(
+        server_address="127.0.0.1:1",
+        schema_id="ignored-by-specialized-engine",
+        requested_model_id="test/currentrel-r6d",
+        client_instance_id="test-client",
+        connect_timeout_s=1.0,
+        inference_timeout_s=1.0,
+        max_message_bytes=8 * 1024 * 1024,
+        jpeg_quality=90,
+        tls_root_cert_path=None,
+        tls_client_cert_path=None,
+        tls_client_key_path=None,
+        tls_server_name_override=None,
+        execution_horizon=15,
+        image_encoding=ImageEncoding.JPEG,
+        camera_calibration_sha256={},
+    )
+    adapter = _adapter()
+    engine = YamCurrentRelativeR6DRemoteInferenceEngine(
+        settings=settings,
+        yam_settings=YamCurrentRelativeR6DSettings(),
+        robot_wrapper=FakeRobotWrapper(),
+        dataset_features={},
+        ordered_action_keys=list(YAM_SCALAR_KEYS),
+        task="Put all oranges in the bowl",
+        fps=30.0,
+        adapter=adapter,
+    )
+    observation = {
+        **_observation(left_xyz=(0.0, 0.5, 0.8)),
+        "left": np.zeros((720, 1280, 3), dtype=np.uint8),
+        "right": np.zeros((720, 1280, 3), dtype=np.uint8),
+    }
+    snapshot = _ObservationSnapshot(
+        sequence=7,
+        capture_tick=3,
+        capture_monotonic_ns=1,
+        values=observation,
+    )
+    engine._queries[snapshot.sequence] = adapter.build_query(observation, None)
+    rows = np.stack([_identity_action_row()] * 24)
+    rows[:, 0] = np.arange(1, 25, dtype=np.float32) * 0.015
+    chunk = PolicyActionChunk(
+        observation_sequence=snapshot.sequence,
+        first_action_tick=snapshot.capture_tick,
+        actions=rows,
+        model_fingerprint="test",
+    )
+
+    decoded = engine._prepare_chunk_for_execution(chunk, snapshot)
+    engine._latest_observation = snapshot
+    engine._last_dispatched_action = np.asarray(
+        [observation[key] for key in YAM_SCALAR_KEYS], dtype=np.float64
+    )
+    executable = engine._future_actions_for_execution(decoded, elapsed_steps=5)
+
+    assert decoded.actions.shape == (24, 14)
+    assert executable.shape == (19, 14)
+    assert np.allclose(executable[-1], decoded.actions[19])
+    assert not np.allclose(executable[-1], decoded.actions[-1])
+    dispatch_steps = np.diff(np.vstack((engine._last_dispatched_action, executable)), axis=0)
+    assert np.abs(dispatch_steps[:, [*range(6), *range(7, 13)]]).max() <= 0.02 + 1e-7

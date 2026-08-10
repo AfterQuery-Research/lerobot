@@ -384,7 +384,6 @@ For supervised motion with the current-relative checkpoint, use:
 ```bash
 uv run lerobot-rollout \
     --strategy.type=base \
-    --strategy.require_operator_start=true \
     --enable_logging=true \
     --return_to_initial_position=false \
     --inference.type=remote_yam_currentrel_r6d \
@@ -406,28 +405,29 @@ uv run lerobot-rollout \
     --duration=60
 ```
 
-After the reset finishes, the command waits for an interactive Enter press.
-Check the physical start pose, both side-camera views, object placement,
-clearance, and stop method before confirming. The adapter executes at most rows
-1 through 15 from each 24-row prediction and then requires a fresh observation.
-It does not use rows 16 through 24 as a fallback when a new prediction is late.
-Each decoded waypoint is expanded into a vector-preserving trajectory with at
-most `0.02` radians of joint motion and `0.05` normalized gripper motion per
-dispatch. A waypoint requiring more than four dispatches fails closed. The
-robot's `0.10` joint bound remains a second, downstream safety limit.
+The rollout begins automatically after the reset finishes, so check the
+physical start pose, both side-camera views, object placement, clearance, and
+stop method before launching the command. The adapter discards model waypoints
+that became stale during inference, then executes at most 15 remaining rows
+from each 24-row prediction. Each decoded waypoint is expanded into a
+vector-preserving trajectory with at most `0.02` radians of joint motion and
+`0.05` normalized gripper motion per dispatch. A waypoint requiring more than
+eight dispatches fails closed. The robot's `0.10` joint bound remains a second,
+downstream safety limit.
 If measured joint error does not decrease for 90 consecutive dispatched
 targets, the progress watchdog stops inference and triggers the same fail-closed
 teardown.
 On an inference, transport, schema, or strict IK failure, queued actions are
 cleared and the rollout disarms without commanding a return trajectory.
 
-MolmoAct2 predicts 30 future actions per request. `execution_horizon=15`
-commits the client to 15 latency-aligned actions from the active prediction
-before switching to the next one. The next request is still made
+This current-relative MolmoAct2 checkpoint predicts 24 future actions per
+request. `execution_horizon=15` commits the client to at most 15 latency-aligned
+model waypoints from the active prediction before switching to the next one.
+The next request is still made
 asynchronously: the client measures recent round-trip latency and starts
 inference early enough for the result to arrive near the execution boundary.
 An early result waits for that boundary; if a result is late, the client keeps
-executing the unused tail of the previous 30-action chunk instead of stopping.
+executing the unused tail of the previous 24-action chunk instead of stopping.
 Returned actions that became stale while inference was running are discarded
 by timestep before the chunk can become active.
 

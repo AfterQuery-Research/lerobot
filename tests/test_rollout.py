@@ -122,6 +122,26 @@ def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
     assert cfg.display_data is False
 
 
+def test_current_relative_rollout_can_start_without_operator_confirmation(monkeypatch):
+    from lerobot.rollout import (
+        BaseStrategyConfig,
+        RolloutConfig,
+        YamCurrentRelativeR6DRemoteInferenceConfig,
+    )
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    monkeypatch.setattr(sys, "argv", ["lerobot-rollout", "--inference.type=remote_yam_currentrel_r6d"])
+    strategy = BaseStrategyConfig(require_operator_start=False)
+    cfg = RolloutConfig(
+        robot=MockRobotConfig(),
+        strategy=strategy,
+        inference=YamCurrentRelativeR6DRemoteInferenceConfig(),
+        fps=30,
+    )
+
+    assert cfg.strategy.require_operator_start is False
+
+
 def test_rollout_logging_creates_shared_timestamped_artifact_directory(tmp_path, monkeypatch):
     import draccus
 
