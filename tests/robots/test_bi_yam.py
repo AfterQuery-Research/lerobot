@@ -725,6 +725,29 @@ def test_send_action_clips_limits_and_delta_and_synchronizes_workers(tmp_path):
     assert record["delta_clipped"] == list(YAM_SCALAR_KEYS)
 
 
+def test_hold_position_reissues_last_applied_target_with_distinct_telemetry(tmp_path):
+    telemetry_path = tmp_path / "control.jsonl"
+    config = make_config(tmp_path, control_telemetry_path=telemetry_path)
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    robot.arm()
+    action = dict.fromkeys(YAM_SCALAR_KEYS, 0.05)
+    applied = robot.send_action(action)
+
+    held = robot.hold_position(phase="inference_hold")
+
+    assert held == applied
+    assert len(workers["left"].commands) == 2
+    assert len(workers["right"].commands) == 2
+    assert workers["left"].commands[-1].positions == workers["left"].commands[-2].positions
+    assert workers["right"].commands[-1].positions == workers["right"].commands[-2].positions
+    robot.disconnect()
+
+    records = [json.loads(line) for line in telemetry_path.read_text().splitlines()]
+    assert [record["phase"] for record in records] == ["policy", "inference_hold"]
+    assert records[-1]["applied"] == pytest.approx(list(applied.values()))
+
+
 def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):
     config = make_config(tmp_path, max_joint_delta=10.0, max_gripper_delta=10.0)
     robot, _ = make_robot(tmp_path, config=config)

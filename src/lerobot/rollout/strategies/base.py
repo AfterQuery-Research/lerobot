@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 
 from lerobot.utils.robot_utils import precise_sleep
@@ -49,16 +50,12 @@ class BaseStrategy(RolloutStrategy):
 
         control_interval = interpolator.get_control_interval(cfg.fps)
 
-        start_time = time.perf_counter()
-        if self.config.require_operator_start:
-            if not sys.stdin.isatty():
-                raise RuntimeError("operator start confirmation requires an interactive terminal")
-            input(
-                "Verify the start pose, camera views, scene clearance, and physical stop. "
-                "Press Enter to begin policy motion..."
-            )
+        if self.config.require_operator_start and not self._wait_for_operator_start(ctx, control_interval):
+            return
         engine.resume()
         logger.info("Base strategy control loop started")
+        start_time = time.perf_counter()
+        awaiting_action = True
 
         while not ctx.runtime.shutdown_event.is_set():
             loop_start = time.perf_counter()
@@ -67,6 +64,9 @@ class BaseStrategy(RolloutStrategy):
                 logger.info("Duration limit reached (%.0fs)", cfg.duration)
                 break
 
+            if awaiting_action:
+                robot.hold_position(phase="inference_hold")
+
             obs = robot.get_observation()
             obs_processed = self._process_observation_and_notify(ctx.processors, obs)
 
@@ -74,6 +74,7 @@ class BaseStrategy(RolloutStrategy):
                 continue
 
             action_dict = send_next_action(obs_processed, obs, ctx, interpolator)
+            awaiting_action = action_dict is None
             self._log_telemetry(obs_processed, action_dict, ctx.runtime)
 
             dt = time.perf_counter() - loop_start
@@ -83,6 +84,38 @@ class BaseStrategy(RolloutStrategy):
                 logger.warning(
                     f"Record loop is running slower ({1 / dt:.1f} Hz) than the target FPS ({cfg.fps} Hz). Dataset frames might be dropped and robot control might be unstable. Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
                 )
+
+    @staticmethod
+    def _wait_for_operator_start(ctx: RolloutContext, control_interval: float) -> bool:
+        if not sys.stdin.isatty():
+            raise RuntimeError("operator start confirmation requires an interactive terminal")
+
+        completed = threading.Event()
+        errors: list[BaseException] = []
+
+        def wait_for_input() -> None:
+            try:
+                input(
+                    "Verify the start pose, camera views, scene clearance, and physical stop. "
+                    "Press Enter to begin policy motion..."
+                )
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        threading.Thread(target=wait_for_input, name="operator-start", daemon=True).start()
+        robot = ctx.hardware.robot_wrapper
+        while not completed.is_set() and not ctx.runtime.shutdown_event.is_set():
+            robot.hold_position(phase="operator_hold")
+            completed.wait(timeout=control_interval)
+
+        if ctx.runtime.shutdown_event.is_set():
+            return False
+        if errors:
+            raise errors[0]
+        robot.hold_position(phase="operator_hold")
+        return True
 
     def teardown(self, ctx: RolloutContext) -> None:
         """Disconnect hardware and stop inference."""

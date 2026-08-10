@@ -248,6 +248,34 @@ class BiYAMFollower(Robot):
         )
         return applied_action
 
+    def hold_position(self, *, phase: str) -> RobotAction:
+        """Reissue the last applied target so the arm watchdog remains active."""
+        self._require_rollout_mode()
+        self._require_connected()
+        if not self._armed:
+            raise RuntimeError("BiYAM is in safe idle; arm it locally before holding position")
+
+        states = self._refresh_commandable_states()
+        present = self._control_positions(states)
+        requested_parts = []
+        for side in ("left", "right"):
+            state = states[side]
+            requested_parts.extend(state.last_applied_positions or state.positions)
+        requested = np.asarray(requested_parts, dtype=np.float64)
+        bounded = np.clip(requested, *self._operational_bounds())
+        applied = self._apply_safety_limits(requested, present)
+        applied_action = self._dispatch_positions(applied)
+        measured = self._control_positions(self._states)
+        self._record_control_telemetry(
+            phase=phase,
+            requested=requested,
+            bounded=bounded,
+            applied=applied,
+            measured_before=present,
+            measured_after=measured,
+        )
+        return applied_action
+
     def reset_for_policy(self) -> RobotAction | None:
         """Move to the configured policy start pose before autonomous control."""
         configured_target = self.config.policy_start_position

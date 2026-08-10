@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -487,6 +488,67 @@ def test_thread_safe_robot_properties():
     assert wrapper.inner is robot
 
     robot.disconnect()
+
+
+def test_base_strategy_refreshes_hold_while_waiting_for_operator(monkeypatch):
+    from lerobot.rollout import BaseStrategyConfig
+    from lerobot.rollout.strategies.base import BaseStrategy
+
+    release_input = threading.Event()
+    hold_phases = []
+
+    class HoldingRobot:
+        def hold_position(self, *, phase):
+            hold_phases.append(phase)
+            if len(hold_phases) >= 2:
+                release_input.set()
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: release_input.wait(timeout=1.0))
+    ctx = SimpleNamespace(
+        runtime=SimpleNamespace(shutdown_event=threading.Event()),
+        hardware=SimpleNamespace(robot_wrapper=HoldingRobot()),
+    )
+
+    started = BaseStrategy(BaseStrategyConfig())._wait_for_operator_start(ctx, control_interval=0.001)
+
+    assert started
+    assert hold_phases == ["operator_hold", "operator_hold", "operator_hold"]
+
+
+def test_base_strategy_holds_until_async_action_is_ready(monkeypatch):
+    from lerobot.rollout import BaseStrategyConfig
+    from lerobot.rollout.strategies.base import BaseStrategy
+
+    shutdown_event = threading.Event()
+    robot = MagicMock()
+    robot.get_observation.return_value = {}
+    engine = MagicMock()
+    interpolator = MagicMock()
+    interpolator.get_control_interval.return_value = 0.001
+    cfg = SimpleNamespace(fps=30.0, duration=60.0, use_torch_compile=False)
+    ctx = SimpleNamespace(
+        runtime=SimpleNamespace(cfg=cfg, shutdown_event=shutdown_event),
+        hardware=SimpleNamespace(robot_wrapper=robot),
+        policy=SimpleNamespace(inference=engine),
+        processors=SimpleNamespace(),
+    )
+    strategy = BaseStrategy(BaseStrategyConfig())
+    strategy._engine = engine
+    strategy._interpolator = interpolator
+    monkeypatch.setattr(strategy, "_process_observation_and_notify", lambda _processors, _obs: {})
+    monkeypatch.setattr(strategy, "_log_telemetry", lambda *_args: None)
+
+    def no_action(*_args, **_kwargs):
+        shutdown_event.set()
+        return None
+
+    monkeypatch.setattr("lerobot.rollout.strategies.base.send_next_action", no_action)
+
+    strategy.run(ctx)
+
+    robot.hold_position.assert_called_once_with(phase="inference_hold")
+    engine.resume.assert_called_once_with()
 
 
 def test_strategy_uses_distinct_policy_start_and_end_resets():

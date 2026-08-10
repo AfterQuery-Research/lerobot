@@ -47,6 +47,14 @@ class ThreadSafeRobot:
         with self._lock:
             return self._robot.send_action(action)
 
+    def hold_position(self, *, phase: str) -> Any | None:
+        """Refresh a hardware watchdog without advancing policy execution."""
+        hold = getattr(self._robot, "hold_position", None)
+        if not callable(hold):
+            return None
+        with self._lock:
+            return hold(phase=phase)
+
     def reset_for_policy(self) -> dict[str, Any] | None:
         """Run an optional robot-specific policy-start reset under the I/O lock."""
         reset = getattr(self._robot, "reset_for_policy", None)
