@@ -48,6 +48,7 @@ from .yam_umi_ee_bridge import (
     YAM_JOINT_LIMITS,
     YAM_SCALAR_KEYS,
     GripperMap,
+    IkResidualError,
     YamArmKinematics,
 )
 
@@ -245,7 +246,7 @@ class YamCurrentRelativeR6DAdapter:
         urdf_path: str | Path | None = None,
         *,
         target_frame_name: str = YAM_FLANGE_FRAME,
-        ik_iterations: int = 3,
+        ik_iterations: int = 10,
         max_position_residual_m: float = 2e-3,
         max_orientation_residual_rad: float = np.deg2rad(1.0),
         flange_to_tcp: np.ndarray | None = None,
@@ -347,11 +348,19 @@ class YamCurrentRelativeR6DAdapter:
             for arm_index, (arm_slice, anchor, solver) in enumerate(
                 zip(arm_slices, anchors, solvers, strict=True)
             ):
+                arm_name = "left" if arm_index == 0 else "right"
                 relative_tcp = decode_relative_pose(row[arm_slice.start : arm_slice.stop - 1])
                 target_tcp = anchor @ relative_tcp
                 target_flange = target_tcp @ flange_to_tcp_inverse
-                solution = np.asarray(solver.ik(target_flange, seeds[arm_index], check=True))
-                self._validate_joint_solution(solution, arm="left" if arm_index == 0 else "right")
+                try:
+                    solution = np.asarray(solver.ik(target_flange, seeds[arm_index], check=True))
+                except IkResidualError as exc:
+                    relative_xyz = np.array2string(relative_tcp[:3, 3], precision=5, separator=",")
+                    raise IkResidualError(
+                        f"action row {row_index + 1}/{rows.shape[0]}, {arm_name} arm, "
+                        f"relative TCP translation {relative_xyz} m: {exc}"
+                    ) from exc
+                self._validate_joint_solution(solution, arm=arm_name)
                 residuals[row_index, arm_index] = solver.residual(solution, target_flange)
                 seeds[arm_index] = solution
                 solutions.append(solution)

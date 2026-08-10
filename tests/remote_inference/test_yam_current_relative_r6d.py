@@ -25,7 +25,7 @@ from lerobot.remote_inference.yam_current_relative_r6d import (
     prepare_policy_image,
     rate_limit_action_chunk,
 )
-from lerobot.remote_inference.yam_umi_ee_bridge import YAM_SCALAR_KEYS, GripperMap
+from lerobot.remote_inference.yam_umi_ee_bridge import YAM_SCALAR_KEYS, GripperMap, IkResidualError
 from lerobot.rollout.inference.remote import RemoteEngineSettings
 from lerobot.rollout.inference.yam_current_relative_r6d import (
     YamCurrentRelativeR6DRemoteInferenceEngine,
@@ -50,6 +50,12 @@ class CartesianFakeKinematics:
     def residual(self, joints_rad: np.ndarray, target_pose: np.ndarray) -> tuple[float, float]:
         reached = self.fk(joints_rad)
         return float(np.linalg.norm(reached[:3, 3] - target_pose[:3, 3])), 0.0
+
+
+class FailingKinematics(CartesianFakeKinematics):
+    def ik(self, target_pose: np.ndarray, seed_rad: np.ndarray, *, check: bool = True) -> np.ndarray:
+        del target_pose, seed_rad, check
+        raise IkResidualError("test residual")
 
 
 def _adapter() -> YamCurrentRelativeR6DAdapter:
@@ -119,6 +125,28 @@ def test_action_rows_are_each_composed_from_the_same_query_anchor():
     assert np.allclose(decoded.actions[1, :3], [0.12, 0.54, 0.86])
     assert np.allclose(decoded.actions[1, 7:10], [0.18, 0.62, 0.94])
     assert np.allclose(decoded.position_residual_m, 0.0)
+
+
+def test_ik_failure_identifies_action_row_arm_and_relative_target():
+    adapter = YamCurrentRelativeR6DAdapter(
+        left=FailingKinematics(),
+        right=CartesianFakeKinematics(),
+        flange_to_tcp=np.eye(4),
+        gripper=GripperMap(a_left=1.0, b_left=0.0, a_right=1.0, b_right=0.0),
+    )
+    row = _identity_action_row()
+    row[:3] = [0.01, -0.02, 0.03]
+    query = adapter.build_query(_observation(), None)
+
+    with pytest.raises(
+        IkResidualError,
+        match=r"action row 1/1, left arm, relative TCP translation \[ 0.01,-0.02, 0.03\] m",
+    ):
+        adapter.decode_action_chunk(row[None, :], query)
+
+
+def test_current_relative_ik_uses_ten_refinement_iterations_by_default():
+    assert YamCurrentRelativeR6DSettings().ik_iterations == 10
 
 
 def test_prepare_policy_image_resizes_to_training_dimensions():

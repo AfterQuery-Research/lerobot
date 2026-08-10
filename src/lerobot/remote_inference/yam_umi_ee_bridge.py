@@ -210,9 +210,9 @@ class YamArmKinematics:
       solution becomes the next linearization point. `ik` therefore always syncs the model
       to the seed first.
     * ``solve()`` performs a single Gauss-Newton step, which is not enough for a
-      command-sized pose delta (max joint error 6.85 degrees at one iteration, 0.0009 at
-      three). `iterations` defaults to 3, and chaining is safe because each solve ends
-      with an ``update_kinematics()``.
+      command-sized pose delta. Multiple refinements are safe because each solve ends
+      with an ``update_kinematics()``; ten iterations provide margin for policy targets
+      near the workspace boundary.
     """
 
     def __init__(
@@ -223,7 +223,7 @@ class YamArmKinematics:
         *,
         orientation_weight: float = 1.0,  # NOT the 0.01 default: joint6 is unobservable
         position_weight: float = 1.0,
-        iterations: int = 3,
+        iterations: int = 10,
         max_position_residual: float = 2e-3,  # metres
         max_orientation_residual: float = np.deg2rad(1.0),
     ):
@@ -289,10 +289,10 @@ class YamArmKinematics:
                 or orientation_error > self.max_orientation_residual
             ):
                 raise IkResidualError(
-                    f"IK did not reach the target: position error {position_error * 1e3:.2f} mm "
-                    f"(limit {self.max_position_residual * 1e3:.2f} mm), orientation error "
-                    f"{np.rad2deg(orientation_error):.2f} deg "
-                    f"(limit {np.rad2deg(self.max_orientation_residual):.2f} deg). "
+                    f"IK did not reach the target: position error {position_error * 1e3:.4f} mm "
+                    f"(limit {self.max_position_residual * 1e3:.4f} mm), orientation error "
+                    f"{np.rad2deg(orientation_error):.4f} deg "
+                    f"(limit {np.rad2deg(self.max_orientation_residual):.4f} deg). "
                     "The target is most likely outside the arm's reachable workspace."
                 )
         return solution

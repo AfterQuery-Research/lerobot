@@ -129,7 +129,7 @@ class YamCurrentRelativeR6DRemoteInferenceConfig(RemoteInferenceConfig):
     right_camera_key: str = "right"
     image_width: int = 800
     image_height: int = 600
-    ik_iterations: int = 3
+    ik_iterations: int = 10
     max_position_residual_m: float = 2e-3
     max_orientation_residual_rad: float = 0.017453292519943295
     max_joint_delta_rad: float = 0.02
