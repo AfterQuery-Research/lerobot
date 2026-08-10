@@ -181,19 +181,20 @@ class LeRobotPolicyBackend(PolicyBackend):
         # host raises "Requested device 'cuda' but CUDA is not available" while the policy
         # config itself downgrades to CPU gracefully. Actions are moved to CPU in infer(),
         # so pinning both pipelines to the serving device is safe.
-        device_override = {"device_processor": {"device": config.device}}
+        preprocessor_overrides = {"device_processor": {"device": config.device}}
         if config.base_checkpoint_path is not None:
-            device_override["molmoact2_pack_inputs"] = {
+            preprocessor_overrides["molmoact2_pack_inputs"] = {
                 "checkpoint_path": config.base_checkpoint_path,
                 "checkpoint_revision": config.base_checkpoint_revision,
             }
+        postprocessor_overrides = {"device_processor": {"device": config.device}}
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy_config,
             pretrained_path=None if config.policy_type == "molmoact2" else config.pretrained_name_or_path,
             pretrained_revision=self._policy_config.pretrained_revision,
             dataset_stats=self._dataset_stats,
-            preprocessor_overrides=device_override,
-            postprocessor_overrides=device_override,
+            preprocessor_overrides=preprocessor_overrides,
+            postprocessor_overrides=postprocessor_overrides,
         )
         self._manifest = self._build_manifest()
 

@@ -145,6 +145,7 @@ def test_saved_molmoact2_processor_receives_base_checkpoint_override(monkeypatch
         "checkpoint_path": "allenai/MolmoAct2-BimanualYAM",
         "checkpoint_revision": "public-revision",
     }
+    assert captured["postprocessor_overrides"] == {"device_processor": {"device": "cpu"}}
 
 
 class _SavedStateStats:
