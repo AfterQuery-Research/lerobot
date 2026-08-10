@@ -221,6 +221,23 @@ def test_rate_limiter_rejects_waypoint_requiring_more_than_four_dispatches():
         )
 
 
+def test_rate_limiter_smooths_a_twelve_dispatch_transition_when_allowed():
+    target = np.zeros((1, 14), dtype=np.float32)
+    target[0, 0] = 0.221
+
+    limited = rate_limit_action_chunk(
+        target,
+        np.zeros(14, dtype=np.float32),
+        max_joint_delta=0.02,
+        max_gripper_delta=0.05,
+        max_dispatches_per_waypoint=16,
+    )
+
+    assert limited.dispatches_per_waypoint.tolist() == [12]
+    assert limited.actions.shape == (12, 14)
+    assert np.abs(np.diff(np.vstack((np.zeros(14), limited.actions)), axis=0)[:, :6]).max() <= 0.02
+
+
 def test_progress_watchdog_counts_only_consecutive_stalled_dispatches():
     watchdog = YamJointProgressWatchdog(max_hold_steps=2, target_tolerance_rad=0.002)
     target = np.zeros(14, dtype=np.float32)
@@ -397,6 +414,7 @@ def test_specialized_engine_latency_aligns_model_rows_before_rate_limiting():
 
     assert decoded.actions.shape == (24, 14)
     assert executable.shape == (19, 14)
+    assert engine._commit_length_for_actions(len(executable)) == 15
     assert np.allclose(executable[-1], decoded.actions[19])
     assert not np.allclose(executable[-1], decoded.actions[-1])
     dispatch_steps = np.diff(np.vstack((engine._last_dispatched_action, executable)), axis=0)

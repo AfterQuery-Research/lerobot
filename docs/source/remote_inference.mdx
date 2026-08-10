@@ -408,12 +408,12 @@ uv run lerobot-rollout \
 The rollout begins automatically after the reset finishes, so check the
 physical start pose, both side-camera views, object placement, clearance, and
 stop method before launching the command. The adapter discards model waypoints
-that became stale during inference, then executes at most 15 remaining rows
-from each 24-row prediction. Each decoded waypoint is expanded into a
-vector-preserving trajectory with at most `0.02` radians of joint motion and
-`0.05` normalized gripper motion per dispatch. A waypoint requiring more than
-eight dispatches fails closed. The robot's `0.10` joint bound remains a second,
-downstream safety limit.
+that became stale during inference, then uses at most 15 remaining rows from
+each 24-row prediction to build the next bounded trajectory. Each decoded
+waypoint is expanded into a vector-preserving trajectory with at most `0.02`
+radians of joint motion and `0.05` normalized gripper motion per dispatch. A
+waypoint requiring more than 16 dispatches fails closed. The robot's `0.10`
+joint bound remains a second, downstream safety limit.
 If measured joint error does not decrease for 90 consecutive dispatched
 targets, the progress watchdog stops inference and triggers the same fail-closed
 teardown.
@@ -421,10 +421,12 @@ On an inference, transport, schema, or strict IK failure, queued actions are
 cleared and the rollout disarms without commanding a return trajectory.
 
 This current-relative MolmoAct2 checkpoint predicts 24 future actions per
-request. `execution_horizon=15` commits the client to at most 15 latency-aligned
-model waypoints from the active prediction before switching to the next one.
-The next request is still made
-asynchronously: the client measures recent round-trip latency and starts
+request. `execution_horizon=15` commits the client to 15 bounded control
+dispatches before switching to the next prediction. When one model waypoint
+requires several bounded dispatches, the unused interpolated tail remains
+available if the next prediction is late.
+The next request is still made asynchronously: the client measures recent
+round-trip latency and starts
 inference early enough for the result to arrive near the execution boundary.
 An early result waits for that boundary; if a result is late, the client keeps
 executing the unused tail of the previous 24-action chunk instead of stopping.

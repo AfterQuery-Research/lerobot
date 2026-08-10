@@ -134,7 +134,7 @@ class YamCurrentRelativeR6DRemoteInferenceConfig(RemoteInferenceConfig):
     max_orientation_residual_rad: float = 0.017453292519943295
     max_joint_delta_rad: float = 0.02
     max_gripper_delta: float = 0.05
-    max_dispatches_per_waypoint: int = 8
+    max_dispatches_per_waypoint: int = 16
     max_progress_hold_steps: int = 90
     progress_target_tolerance_rad: float = 2e-3
     min_progress_rad: float = 1e-4
