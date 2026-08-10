@@ -395,7 +395,8 @@ uv run lerobot-rollout \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
     --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
-    --robot.max_joint_delta=0.02 \
+    --robot.policy_start_position='[0.0, 0.05, 0.05, 0.0, 0.0, 0.0, 1.0, 0.0, 0.05, 0.05, 0.0, 0.0, 0.0, 1.0]' \
+    --robot.max_joint_delta=0.10 \
     --robot.max_gripper_delta=0.05 \
     --robot.cameras="$CAMERAS" \
     --task="$TASK" \
@@ -410,6 +411,10 @@ Check the physical start pose, both side-camera views, object placement,
 clearance, and stop method before confirming. The adapter executes at most rows
 1 through 15 from each 24-row prediction and then requires a fresh observation.
 It does not use rows 16 through 24 as a fallback when a new prediction is late.
+Each decoded waypoint is expanded into a vector-preserving trajectory with at
+most `0.02` radians of joint motion and `0.05` normalized gripper motion per
+dispatch. A waypoint requiring more than four dispatches fails closed. The
+robot's `0.10` joint bound remains a second, downstream safety limit.
 On an inference, transport, schema, or strict IK failure, queued actions are
 cleared and the rollout disarms without commanding a return trajectory.
 

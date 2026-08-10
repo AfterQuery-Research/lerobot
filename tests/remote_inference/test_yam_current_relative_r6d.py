@@ -6,6 +6,7 @@ import socket
 import time
 
 import numpy as np
+import pytest
 
 from lerobot.datasets.umi_current_relative import (
     UMI_CURRENTREL_ACTION_NAMES,
@@ -21,6 +22,7 @@ from lerobot.remote_inference.server import RemotePolicyServerConfig, create_grp
 from lerobot.remote_inference.yam_current_relative_r6d import (
     YamCurrentRelativeR6DAdapter,
     prepare_policy_image,
+    rate_limit_action_chunk,
 )
 from lerobot.remote_inference.yam_umi_ee_bridge import YAM_SCALAR_KEYS, GripperMap
 from lerobot.rollout.inference.remote import RemoteEngineSettings
@@ -128,6 +130,38 @@ def test_prepare_policy_image_resizes_to_training_dimensions():
     assert prepared.dtype == np.uint8
     assert prepared.flags.c_contiguous
     assert np.all(prepared[:, :, 1] == 127)
+
+
+def test_rate_limiter_expands_waypoints_without_changing_vector_direction():
+    initial = np.zeros(14, dtype=np.float32)
+    target = np.asarray([0.03] * 6 + [0.08] + [-0.03] * 6 + [0.08], dtype=np.float32)
+
+    limited = rate_limit_action_chunk(
+        target[None, :],
+        initial,
+        max_joint_delta=0.02,
+        max_gripper_delta=0.05,
+        max_dispatches_per_waypoint=4,
+    )
+
+    assert limited.dispatches_per_waypoint.tolist() == [2]
+    assert np.allclose(limited.actions[0], target / 2)
+    assert np.allclose(limited.actions[1], target)
+    assert np.abs(np.diff(np.vstack((initial, limited.actions)), axis=0)[:, :6]).max() <= 0.02
+
+
+def test_rate_limiter_rejects_waypoint_requiring_more_than_four_dispatches():
+    target = np.zeros((1, 14), dtype=np.float32)
+    target[0, 0] = 0.081
+
+    with pytest.raises(ValueError, match="waypoint 1 requires 5 dispatches"):
+        rate_limit_action_chunk(
+            target,
+            np.zeros(14, dtype=np.float32),
+            max_joint_delta=0.02,
+            max_gripper_delta=0.05,
+            max_dispatches_per_waypoint=4,
+        )
 
 
 class FakeRobot:

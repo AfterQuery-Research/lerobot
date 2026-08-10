@@ -74,6 +74,8 @@ class YamCurrentRelativeQuery:
     right_tcp: np.ndarray
     left_joints: np.ndarray
     right_joints: np.ndarray
+    left_gripper: float
+    right_gripper: float
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,59 @@ class DecodedActionChunk:
     actions: np.ndarray
     position_residual_m: np.ndarray
     orientation_residual_rad: np.ndarray
+
+
+@dataclass(frozen=True)
+class RateLimitedActionChunk:
+    actions: np.ndarray
+    dispatches_per_waypoint: np.ndarray
+
+
+def rate_limit_action_chunk(
+    actions: np.ndarray,
+    initial_action: np.ndarray,
+    *,
+    max_joint_delta: float,
+    max_gripper_delta: float,
+    max_dispatches_per_waypoint: int,
+) -> RateLimitedActionChunk:
+    """Expand YAM waypoints into vector-preserving, per-dispatch bounded targets."""
+
+    rows = np.asarray(actions, dtype=np.float64)
+    previous = np.asarray(initial_action, dtype=np.float64)
+    if rows.ndim != 2 or rows.shape[1] != len(YAM_SCALAR_KEYS):
+        raise ValueError(f"expected YAM action chunk shape (N, {len(YAM_SCALAR_KEYS)}), got {rows.shape}")
+    if previous.shape != (len(YAM_SCALAR_KEYS),):
+        raise ValueError(f"expected initial YAM action shape ({len(YAM_SCALAR_KEYS)},), got {previous.shape}")
+    if not np.isfinite(rows).all() or not np.isfinite(previous).all():
+        raise ValueError("YAM rate limiter received non-finite actions")
+    if max_joint_delta <= 0 or max_gripper_delta <= 0 or max_dispatches_per_waypoint <= 0:
+        raise ValueError("YAM rate limits and dispatch cap must be positive")
+
+    joint_indices = np.asarray([*range(6), *range(7, 13)])
+    gripper_indices = np.asarray([6, 13])
+    expanded: list[np.ndarray] = []
+    dispatch_counts = np.empty(len(rows), dtype=np.int64)
+    for row_index, target in enumerate(rows):
+        joint_distance = float(np.abs(target[joint_indices] - previous[joint_indices]).max())
+        gripper_distance = float(np.abs(target[gripper_indices] - previous[gripper_indices]).max())
+        joint_dispatches = int(np.ceil(max(0.0, joint_distance - 1e-9) / max_joint_delta))
+        gripper_dispatches = int(np.ceil(max(0.0, gripper_distance - 1e-9) / max_gripper_delta))
+        dispatches = max(1, joint_dispatches, gripper_dispatches)
+        if dispatches > max_dispatches_per_waypoint:
+            raise ValueError(
+                f"current-relative waypoint {row_index + 1} requires {dispatches} dispatches; "
+                f"limit is {max_dispatches_per_waypoint}"
+            )
+        delta = target - previous
+        expanded.extend(previous + delta * (step / dispatches) for step in range(1, dispatches + 1))
+        dispatch_counts[row_index] = dispatches
+        previous = target
+
+    return RateLimitedActionChunk(
+        actions=np.ascontiguousarray(expanded, dtype=np.float32),
+        dispatches_per_waypoint=dispatch_counts,
+    )
 
 
 def resolve_yam_urdf(path: str | Path | None = None) -> Path:
@@ -212,6 +267,8 @@ class YamCurrentRelativeR6DAdapter:
             right_tcp=right_tcp,
             left_joints=left_joints,
             right_joints=right_joints,
+            left_gripper=left_gripper,
+            right_gripper=right_gripper,
         )
 
     def decode_action_chunk(
@@ -273,6 +330,7 @@ class YamCurrentRelativeR6DAdapter:
 
 __all__ = [
     "DecodedActionChunk",
+    "RateLimitedActionChunk",
     "YAM_CURRENTREL_ACTION_NAMES",
     "YAM_CURRENTREL_CAMERA_KEYS",
     "YAM_CURRENTREL_SCHEMA_ID",
@@ -280,5 +338,6 @@ __all__ = [
     "YamCurrentRelativeQuery",
     "YamCurrentRelativeR6DAdapter",
     "prepare_policy_image",
+    "rate_limit_action_chunk",
     "resolve_yam_urdf",
 ]

@@ -369,7 +369,7 @@ class RemoteInferenceEngine(InferenceEngine):
         self._active_chunk_sequence = chunk.observation_sequence
         self._active_chunk_actions_sent = 0
 
-        committed_actions = min(self._settings.execution_horizon, len(self._action_queue))
+        committed_actions = self._commit_length_for_actions(len(self._action_queue))
         self._switch_tick = self._current_tick + committed_actions
         latency_budget_steps = self._latency_budget_steps_locked()
         self._request_tick = max(self._current_tick, self._switch_tick - latency_budget_steps)
@@ -403,6 +403,11 @@ class RemoteInferenceEngine(InferenceEngine):
                 self._settings.execution_horizon,
             )
         return True
+
+    def _commit_length_for_actions(self, action_count: int) -> int:
+        """Return the number of queued control ticks committed at activation."""
+
+        return min(self._settings.execution_horizon, action_count)
 
     def _future_actions_for_execution(
         self,

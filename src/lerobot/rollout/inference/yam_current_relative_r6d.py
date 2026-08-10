@@ -34,6 +34,7 @@ from lerobot.remote_inference.yam_current_relative_r6d import (
     YamCurrentRelativeQuery,
     YamCurrentRelativeR6DAdapter,
     prepare_policy_image,
+    rate_limit_action_chunk,
 )
 from lerobot.remote_inference.yam_umi_ee_bridge import (
     YAM_FLANGE_TO_FINGERTIP,
@@ -61,6 +62,9 @@ class YamCurrentRelativeR6DSettings:
     ik_iterations: int = 3
     max_position_residual_m: float = 2e-3
     max_orientation_residual_rad: float = float(np.deg2rad(1.0))
+    max_joint_delta_rad: float = 0.02
+    max_gripper_delta: float = 0.05
+    max_dispatches_per_waypoint: int = 4
     flange_to_tcp_z_m: float = float(YAM_FLANGE_TO_FINGERTIP[2, 3])
     gripper_a_left: float = 2.2559
     gripper_b_left: float = -1.2290
@@ -80,6 +84,10 @@ class YamCurrentRelativeR6DSettings:
             raise ValueError("ik_iterations must be positive")
         if self.max_position_residual_m <= 0 or self.max_orientation_residual_rad <= 0:
             raise ValueError("IK residual limits must be positive")
+        if self.max_joint_delta_rad <= 0 or self.max_gripper_delta <= 0:
+            raise ValueError("current-relative action rate limits must be positive")
+        if self.max_dispatches_per_waypoint <= 0:
+            raise ValueError("max_dispatches_per_waypoint must be positive")
         numeric = (
             self.flange_to_tcp_z_m,
             self.gripper_a_left,
@@ -230,24 +238,50 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
             raise ValueError(f"missing query anchor for policy observation {chunk.observation_sequence}")
         model_actions = chunk.actions[: self._settings.execution_horizon]
         decoded = self._adapter.decode_action_chunk(model_actions, query)
-        executable = decoded.actions
+        initial_action = np.asarray(
+            [
+                *query.left_joints,
+                query.left_gripper,
+                *query.right_joints,
+                query.right_gripper,
+            ],
+            dtype=np.float64,
+        )
+        rate_limited = rate_limit_action_chunk(
+            decoded.actions,
+            initial_action,
+            max_joint_delta=self._yam_settings.max_joint_delta_rad,
+            max_gripper_delta=self._yam_settings.max_gripper_delta,
+            max_dispatches_per_waypoint=self._yam_settings.max_dispatches_per_waypoint,
+        )
+        executable = rate_limited.actions
         initial_joints = np.concatenate((query.left_joints, query.right_joints))
         decoded_joints = np.concatenate((decoded.actions[:, :6], decoded.actions[:, 7:13]), axis=1)
-        joint_steps = np.diff(np.vstack((initial_joints, decoded_joints)), axis=0)
+        model_joint_steps = np.diff(np.vstack((initial_joints, decoded_joints)), axis=0)
+        executable_joints = np.concatenate((executable[:, :6], executable[:, 7:13]), axis=1)
+        dispatch_joint_steps = np.diff(np.vstack((initial_joints, executable_joints)), axis=0)
         model_translations = np.concatenate((model_actions[:, :3], model_actions[:, 10:13]), axis=1)
         logger.info(
-            "Decoded current-relative chunk %d: executable=%d/%d max_translation=%.4fm "
-            "max_joint_step=%.4frad max_ik_position_residual=%.3fmm "
+            "Decoded current-relative chunk %d: model_rows=%d/%d dispatches=%d "
+            "max_dispatches_per_waypoint=%d max_translation=%.4fm "
+            "max_model_joint_step=%.4frad max_dispatch_joint_step=%.4frad "
+            "max_ik_position_residual=%.3fmm "
             "max_ik_orientation_residual=%.3fdeg",
             chunk.observation_sequence,
-            executable.shape[0],
+            model_actions.shape[0],
             chunk.actions.shape[0],
+            executable.shape[0],
+            int(rate_limited.dispatches_per_waypoint.max()),
             float(np.abs(model_translations).max()),
-            float(np.abs(joint_steps).max()),
+            float(np.abs(model_joint_steps).max()),
+            float(np.abs(dispatch_joint_steps).max()),
             float(decoded.position_residual_m.max() * 1e3),
             float(np.rad2deg(decoded.orientation_residual_rad.max())),
         )
         return replace(chunk, actions=np.ascontiguousarray(executable, dtype=np.float32))
+
+    def _commit_length_for_actions(self, action_count: int) -> int:
+        return action_count
 
     def reset(self) -> None:
         self._queries.clear()
