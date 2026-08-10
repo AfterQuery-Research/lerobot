@@ -91,6 +91,56 @@ class RateLimitedActionChunk:
     dispatches_per_waypoint: np.ndarray
 
 
+@dataclass
+class YamJointProgressWatchdog:
+    max_hold_steps: int = 90
+    target_tolerance_rad: float = 2e-3
+    min_progress_rad: float = 1e-4
+    stalled_steps: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_hold_steps <= 0:
+            raise ValueError("max_hold_steps must be positive")
+        if self.target_tolerance_rad <= 0 or self.min_progress_rad < 0:
+            raise ValueError("progress tolerances are invalid")
+
+    def observe(
+        self,
+        commanded: np.ndarray,
+        measured_before: np.ndarray,
+        measured_after: np.ndarray,
+    ) -> None:
+        """Require measured joint error to decrease after each dispatched target."""
+
+        target = np.asarray(commanded, dtype=np.float64)
+        before = np.asarray(measured_before, dtype=np.float64)
+        after = np.asarray(measured_after, dtype=np.float64)
+        expected_shape = (len(YAM_SCALAR_KEYS),)
+        if target.shape != expected_shape or before.shape != expected_shape or after.shape != expected_shape:
+            raise ValueError(f"progress watchdog expects three YAM vectors with shape {expected_shape}")
+        if not np.isfinite(target).all() or not np.isfinite(before).all() or not np.isfinite(after).all():
+            raise ValueError("progress watchdog received non-finite YAM positions")
+
+        joint_indices = np.asarray([*range(6), *range(7, 13)])
+        error_before = float(np.abs(target[joint_indices] - before[joint_indices]).max())
+        error_after = float(np.abs(target[joint_indices] - after[joint_indices]).max())
+        reached = error_after <= self.target_tolerance_rad
+        progressed = error_after <= error_before - self.min_progress_rad
+        if reached or progressed or error_before <= self.target_tolerance_rad:
+            self.stalled_steps = 0
+            return
+
+        self.stalled_steps += 1
+        if self.stalled_steps >= self.max_hold_steps:
+            raise RuntimeError(
+                "YAM joint tracking made no measurable progress for "
+                f"{self.stalled_steps} dispatches (error {error_before:.4f} -> {error_after:.4f} rad)"
+            )
+
+    def reset(self) -> None:
+        self.stalled_steps = 0
+
+
 def rate_limit_action_chunk(
     actions: np.ndarray,
     initial_action: np.ndarray,
@@ -335,6 +385,7 @@ __all__ = [
     "YAM_CURRENTREL_CAMERA_KEYS",
     "YAM_CURRENTREL_SCHEMA_ID",
     "YAM_CURRENTREL_STATE_NAMES",
+    "YamJointProgressWatchdog",
     "YamCurrentRelativeQuery",
     "YamCurrentRelativeR6DAdapter",
     "prepare_policy_image",

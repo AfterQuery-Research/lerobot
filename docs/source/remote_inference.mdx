@@ -415,6 +415,9 @@ Each decoded waypoint is expanded into a vector-preserving trajectory with at
 most `0.02` radians of joint motion and `0.05` normalized gripper motion per
 dispatch. A waypoint requiring more than four dispatches fails closed. The
 robot's `0.10` joint bound remains a second, downstream safety limit.
+If measured joint error does not decrease for 90 consecutive dispatched
+targets, the progress watchdog stops inference and triggers the same fail-closed
+teardown.
 On an inference, transport, schema, or strict IK failure, queued actions are
 cleared and the rollout disarms without commanding a return trajectory.
 

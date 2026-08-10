@@ -135,6 +135,9 @@ class YamCurrentRelativeR6DRemoteInferenceConfig(RemoteInferenceConfig):
     max_joint_delta_rad: float = 0.02
     max_gripper_delta: float = 0.05
     max_dispatches_per_waypoint: int = 4
+    max_progress_hold_steps: int = 90
+    progress_target_tolerance_rad: float = 2e-3
+    min_progress_rad: float = 1e-4
     flange_to_tcp_z_m: float = -0.056683
     gripper_a_left: float = 2.2559
     gripper_b_left: float = -1.2290
@@ -158,6 +161,9 @@ class YamCurrentRelativeR6DRemoteInferenceConfig(RemoteInferenceConfig):
             max_joint_delta_rad=self.max_joint_delta_rad,
             max_gripper_delta=self.max_gripper_delta,
             max_dispatches_per_waypoint=self.max_dispatches_per_waypoint,
+            max_progress_hold_steps=self.max_progress_hold_steps,
+            progress_target_tolerance_rad=self.progress_target_tolerance_rad,
+            min_progress_rad=self.min_progress_rad,
             flange_to_tcp_z_m=self.flange_to_tcp_z_m,
             gripper_a_left=self.gripper_a_left,
             gripper_b_left=self.gripper_b_left,
@@ -229,6 +235,9 @@ def create_inference_engine(
                 max_joint_delta_rad=config.max_joint_delta_rad,
                 max_gripper_delta=config.max_gripper_delta,
                 max_dispatches_per_waypoint=config.max_dispatches_per_waypoint,
+                max_progress_hold_steps=config.max_progress_hold_steps,
+                progress_target_tolerance_rad=config.progress_target_tolerance_rad,
+                min_progress_rad=config.min_progress_rad,
                 flange_to_tcp_z_m=config.flange_to_tcp_z_m,
                 gripper_a_left=config.gripper_a_left,
                 gripper_b_left=config.gripper_b_left,

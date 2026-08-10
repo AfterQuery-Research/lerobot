@@ -33,6 +33,7 @@ from lerobot.remote_inference.yam_current_relative_r6d import (
     YAM_CURRENTREL_STATE_NAMES,
     YamCurrentRelativeQuery,
     YamCurrentRelativeR6DAdapter,
+    YamJointProgressWatchdog,
     prepare_policy_image,
     rate_limit_action_chunk,
 )
@@ -65,6 +66,9 @@ class YamCurrentRelativeR6DSettings:
     max_joint_delta_rad: float = 0.02
     max_gripper_delta: float = 0.05
     max_dispatches_per_waypoint: int = 4
+    max_progress_hold_steps: int = 90
+    progress_target_tolerance_rad: float = 2e-3
+    min_progress_rad: float = 1e-4
     flange_to_tcp_z_m: float = float(YAM_FLANGE_TO_FINGERTIP[2, 3])
     gripper_a_left: float = 2.2559
     gripper_b_left: float = -1.2290
@@ -88,6 +92,10 @@ class YamCurrentRelativeR6DSettings:
             raise ValueError("current-relative action rate limits must be positive")
         if self.max_dispatches_per_waypoint <= 0:
             raise ValueError("max_dispatches_per_waypoint must be positive")
+        if self.max_progress_hold_steps <= 0:
+            raise ValueError("max_progress_hold_steps must be positive")
+        if self.progress_target_tolerance_rad <= 0 or self.min_progress_rad < 0:
+            raise ValueError("current-relative progress tolerances are invalid")
         numeric = (
             self.flange_to_tcp_z_m,
             self.gripper_a_left,
@@ -126,6 +134,14 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
             raise ValueError("current-relative onset-v3 execution_horizon cannot exceed 15")
         self._yam_settings = yam_settings
         self._queries: dict[int, YamCurrentRelativeQuery] = {}
+        self._progress_watchdog = YamJointProgressWatchdog(
+            max_hold_steps=yam_settings.max_progress_hold_steps,
+            target_tolerance_rad=yam_settings.progress_target_tolerance_rad,
+            min_progress_rad=yam_settings.min_progress_rad,
+        )
+        self._candidate_action: np.ndarray | None = None
+        self._progress_target: np.ndarray | None = None
+        self._progress_measured_before: np.ndarray | None = None
         if adapter is None:
             flange_to_tcp = np.eye(4, dtype=np.float64)
             flange_to_tcp[2, 3] = yam_settings.flange_to_tcp_z_m
@@ -283,8 +299,55 @@ class YamCurrentRelativeR6DRemoteInferenceEngine(RemoteInferenceEngine):
     def _commit_length_for_actions(self, action_count: int) -> int:
         return action_count
 
+    def get_action(self, obs_frame: dict | None):
+        self._check_dispatch_progress()
+        action = super().get_action(obs_frame)
+        with self._lock:
+            self._candidate_action = None if action is None else action.detach().cpu().numpy().copy()
+        return action
+
+    def notify_action_sent(self) -> None:
+        super().notify_action_sent()
+        with self._lock:
+            snapshot = self._latest_observation
+            if self._candidate_action is None or snapshot is None:
+                return
+            self._progress_target = self._candidate_action
+            self._progress_measured_before = np.asarray(
+                [snapshot.values[key] for key in YAM_SCALAR_KEYS],
+                dtype=np.float64,
+            )
+            self._candidate_action = None
+
+    def _check_dispatch_progress(self) -> None:
+        with self._lock:
+            snapshot = self._latest_observation
+            if self._progress_target is None or self._progress_measured_before is None or snapshot is None:
+                return
+            measured_after = np.asarray(
+                [snapshot.values[key] for key in YAM_SCALAR_KEYS],
+                dtype=np.float64,
+            )
+            target = self._progress_target
+            measured_before = self._progress_measured_before
+            self._progress_target = None
+            self._progress_measured_before = None
+            try:
+                self._progress_watchdog.observe(target, measured_before, measured_after)
+            except RuntimeError:
+                self._clear_scheduler_locked()
+                self._failed.set()
+                self._policy_active.clear()
+                if self._global_shutdown_event is not None:
+                    self._global_shutdown_event.set()
+                raise
+
     def reset(self) -> None:
         self._queries.clear()
+        self._progress_watchdog.reset()
+        self._candidate_action = None
+        self._progress_target = None
+        self._progress_measured_before = None
         super().reset()
 
 

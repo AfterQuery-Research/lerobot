@@ -21,6 +21,7 @@ from lerobot.remote_inference.schema import ImageEncoding
 from lerobot.remote_inference.server import RemotePolicyServerConfig, create_grpc_server
 from lerobot.remote_inference.yam_current_relative_r6d import (
     YamCurrentRelativeR6DAdapter,
+    YamJointProgressWatchdog,
     prepare_policy_image,
     rate_limit_action_chunk,
 )
@@ -162,6 +163,31 @@ def test_rate_limiter_rejects_waypoint_requiring_more_than_four_dispatches():
             max_gripper_delta=0.05,
             max_dispatches_per_waypoint=4,
         )
+
+
+def test_progress_watchdog_counts_only_consecutive_stalled_dispatches():
+    watchdog = YamJointProgressWatchdog(max_hold_steps=2, target_tolerance_rad=0.002)
+    target = np.zeros(14, dtype=np.float32)
+    target[0] = 0.02
+    before = np.zeros(14, dtype=np.float32)
+
+    watchdog.observe(target, before, np.asarray([0.005] + [0.0] * 13))
+    assert watchdog.stalled_steps == 0
+
+    watchdog.observe(target, before, before)
+    assert watchdog.stalled_steps == 1
+    with pytest.raises(RuntimeError, match="no measurable progress for 2 dispatches"):
+        watchdog.observe(target, before, before)
+
+
+def test_progress_watchdog_accepts_a_target_already_within_tolerance():
+    watchdog = YamJointProgressWatchdog(max_hold_steps=1, target_tolerance_rad=0.002)
+    target = np.zeros(14, dtype=np.float32)
+    target[0] = 0.001
+
+    watchdog.observe(target, np.zeros(14), np.zeros(14))
+
+    assert watchdog.stalled_steps == 0
 
 
 class FakeRobot:
