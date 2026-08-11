@@ -71,6 +71,14 @@ else:
 logger = logging.getLogger(__name__)
 
 
+def _local_preprocessor_overrides(device: str, rename_map: dict[str, str]) -> dict[str, dict]:
+    """Build local rollout overrides without erasing a checkpoint's saved camera map."""
+    overrides: dict[str, dict] = {"device_processor": {"device": device}}
+    if rename_map:
+        overrides["rename_observations_processor"] = {"rename_map": rename_map}
+    return overrides
+
+
 def _wrap_predict_action_chunk_with_torch_compile(
     policy: PreTrainedPolicy,
     *,
@@ -477,15 +485,18 @@ def build_rollout_context(
 
     if not is_remote:
         assert policy_config is not None
+        preprocessor_overrides = _local_preprocessor_overrides(cfg.device, cfg.rename_map)
+        # Only override the rename step when the user actually passed a map: step
+        # overrides merge as {**saved_cfg, **override}, so an empty default
+        # rename_map would CLOBBER a checkpoint-shipped rename map (e.g. pi05
+        # fine-tunes mapping top/left/right onto base_0_rgb/*_wrist_0_rgb slots)
+        # and the policy would then see no image features at all.
         preprocessor, postprocessor = make_pre_post_processors(
             policy_cfg=policy_config,
             pretrained_path=policy_config.pretrained_path,
             pretrained_revision=policy_config.pretrained_revision,
             dataset_stats=dataset_stats,
-            preprocessor_overrides={
-                "device_processor": {"device": cfg.device},
-                "rename_observations_processor": {"rename_map": cfg.rename_map},
-            },
+            preprocessor_overrides=preprocessor_overrides,
         )
 
         if isinstance(cfg.inference, SyncInferenceConfig) and any(
