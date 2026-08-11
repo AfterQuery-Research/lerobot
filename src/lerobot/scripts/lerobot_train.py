@@ -78,6 +78,18 @@ else:
 from .lerobot_eval import eval_policy_all
 
 
+def _drop_inapplicable_normalizer_overrides(
+    policy_type: str | None,
+    preprocessor_overrides: dict[str, Any],
+    postprocessor_overrides: dict[str, Any],
+) -> None:
+    """Remove generic normalization overrides from MolmoAct2's custom pipeline."""
+    if policy_type != "molmoact2":
+        return
+    preprocessor_overrides.pop("normalizer_processor", None)
+    postprocessor_overrides.pop("unnormalizer_processor", None)
+
+
 @contextmanager
 def _make_eval_envs(cfg: TrainPipelineConfig) -> Iterator[dict[str, dict[int, Any]]]:
     """Create evaluation environments for one run and always dispose of them."""
@@ -385,9 +397,11 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         # MolmoAct2's processor pipeline has no generic normalizer/unnormalizer steps
         # (it uses molmoact2_masked_normalizer instead); passing these overrides raises
         # KeyError on resume (upstream issue #3998). Drop the inapplicable keys.
-        if cfg.policy is not None and getattr(cfg.policy, "type", None) == "molmoact2":
-            preprocessor_overrides.pop("normalizer_processor", None)
-            postprocessor_overrides.pop("unnormalizer_processor", None)
+        _drop_inapplicable_normalizer_overrides(
+            getattr(cfg.policy, "type", None),
+            preprocessor_overrides,
+            postprocessor_overrides,
+        )
         processor_kwargs["preprocessor_overrides"] = preprocessor_overrides
         processor_kwargs["postprocessor_overrides"] = postprocessor_overrides
 
