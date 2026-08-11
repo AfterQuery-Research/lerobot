@@ -484,9 +484,19 @@ def _extract_discrete_token_bins(
 
 def _weighted_mean(values: Tensor, weights: Tensor | None) -> Tensor:
     if weights is None:
-        return values.mean()
-    weights = weights.to(device=values.device, dtype=values.dtype)
-    return torch.dot(values, weights) / weights.sum().clamp_min(1.0)
+        numerator = values.sum()
+        denominator = values.new_tensor(float(values.numel()))
+    else:
+        weights = weights.to(device=values.device, dtype=values.dtype)
+        numerator = torch.dot(values, weights)
+        denominator = weights.sum()
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        world_size = torch.distributed.get_world_size()
+        denominator = denominator.detach().clone()
+        torch.distributed.all_reduce(denominator, op=torch.distributed.ReduceOp.SUM)
+        denominator = denominator / world_size
+    return numerator / denominator.clamp_min(1.0)
 
 
 def _weighted_per_example(
@@ -544,7 +554,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
         self.action_tokenizer: Any | None = None
         self._load_hf_model()
         _validate_inference_action_mode(self.config, self._checkpoint_action_mode)
-        if self.config.enable_lora_vlm:
+        if self.config.train_mode_vlm == "lora":
             self._apply_lora_adapters()
         self.init_rtc_processor()
 
@@ -563,6 +573,9 @@ class MolmoAct2Policy(PreTrainedPolicy):
             checkpoint_location,
             token=_hf_token(),
         )
+        text_config = getattr(hf_config, "text_config", None)
+        if text_config is not None and hasattr(text_config, "residual_dropout"):
+            text_config.residual_dropout = float(self.config.llm_residual_dropout)
         self.model = MolmoAct2ForConditionalGeneration.from_pretrained(
             checkpoint_location,
             config=hf_config,
@@ -603,8 +616,8 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
         if self.config.freeze_embedding:
             self._freeze_input_embeddings()
-        if self.config.train_action_expert_only:
-            self._freeze_non_action_expert_parameters()
+        if self.config.train_mode_vlm == "freeze":
+            self._freeze_vlm_parameters()
         if self.config.gradient_checkpointing:
             self._enable_gradient_checkpointing()
         self.train(self.training)
@@ -664,14 +677,14 @@ class MolmoAct2Policy(PreTrainedPolicy):
         if vision_backbone is not None:
             vision_backbone.gradient_checkpointing = True
 
-    def _freeze_non_action_expert_parameters(self) -> None:
+    def _freeze_vlm_parameters(self) -> None:
         trainable_params = 0
         for name, param in self.named_parameters():
             param.requires_grad = "action_expert" in name
             if param.requires_grad:
                 trainable_params += param.numel()
         if trainable_params == 0:
-            raise RuntimeError("train_action_expert_only=true, but no action_expert parameters were found.")
+            raise RuntimeError("train_mode_vlm='freeze', but no action_expert parameters were found.")
 
     def _unfreeze_action_expert_parameters(self) -> None:
         trainable_params = 0
@@ -680,11 +693,11 @@ class MolmoAct2Policy(PreTrainedPolicy):
                 param.requires_grad_(True)
                 trainable_params += param.numel()
         if trainable_params == 0:
-            raise RuntimeError("enable_lora_vlm=true, but no action_expert parameters were found.")
+            raise RuntimeError("train_mode_vlm='lora', but no action_expert parameters were found.")
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if getattr(self.config, "train_action_expert_only", False) and hasattr(self, "model"):
+        if getattr(self.config, "train_mode_vlm", "fft") == "freeze" and hasattr(self, "model"):
             self._hf_model().eval()
             self._action_expert().train(mode)
         self._set_inference_cuda_graph_enabled(not mode)
@@ -715,8 +728,16 @@ class MolmoAct2Policy(PreTrainedPolicy):
                 "freeze_embedding=true would also freeze lm_head because input embeddings and lm_head "
                 "share parameters in this checkpoint."
             )
-        for param in embedding_params:
-            param.requires_grad = False
+        for embeddings in embedding_modules:
+            base_embedding = getattr(embeddings, "embedding", None)
+            if isinstance(base_embedding, torch.nn.Parameter):
+                base_embedding.requires_grad = False
+            elif isinstance(base_embedding, torch.nn.Module):
+                for param in base_embedding.parameters():
+                    param.requires_grad = False
+            else:
+                for param in embeddings.parameters():
+                    param.requires_grad = False
 
     def get_optim_params(self) -> list[dict[str, Any]]:
         """Return optimizer param groups with per-component learning rates."""
@@ -738,9 +759,10 @@ class MolmoAct2Policy(PreTrainedPolicy):
             else:
                 vlm_params.append(param)
 
-        vlm_lr = 5e-5 if self.config.enable_lora_vlm else self.config.optimizer_lr
-        vit_lr = 5e-5 if self.config.enable_lora_vlm else self.config.optimizer_vit_lr
-        connector_lr = 5e-5 if self.config.enable_lora_vlm else self.config.optimizer_connector_lr
+        vlm_lora = self.config.train_mode_vlm == "lora"
+        vlm_lr = 5e-5 if vlm_lora else self.config.optimizer_lr
+        vit_lr = 5e-5 if vlm_lora else self.config.optimizer_vit_lr
+        connector_lr = 5e-5 if vlm_lora else self.config.optimizer_connector_lr
 
         groups: list[dict[str, Any]] = []
         if vlm_params:
@@ -888,9 +910,11 @@ class MolmoAct2Policy(PreTrainedPolicy):
         timesteps: Tensor | None = None,
         noise: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        action_expert = self._backbone()._require_action_expert()
-        action_dtype = next(action_expert.parameters()).dtype
-        actions = actions.to(dtype=action_dtype)
+        # Match the original MolmoAct2 fp32+AMP training path: normalized actions,
+        # sampled flow noise, timesteps, and the velocity target are kept in fp32.
+        # Autocast still handles the action expert matmuls when the model weights
+        # are loaded in bf16 by the LeRobot training stack.
+        actions = actions.to(dtype=torch.float32)
         batch_size = int(actions.shape[0])
         device = actions.device
         num_flow_timesteps = max(1, int(self.config.num_flow_timesteps))
@@ -906,7 +930,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
                     alpha=self.config.flow_matching_beta_alpha,
                     beta=self.config.flow_matching_beta_beta,
                 )
-                .to(dtype=action_dtype)
+                .to(dtype=actions.dtype)
                 .view(batch_size, num_flow_timesteps)
             )
         else:
@@ -1038,6 +1062,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
         device = actions.device
         xt_flat = xt.reshape(batch_size * num_flow_timesteps, actions.shape[1], actions.shape[2])
         timesteps_flat = timesteps.reshape(batch_size * num_flow_timesteps)
+        action_expert_dtype = action_expert.action_embed.weight.dtype
 
         hidden_states, causal_mask_mapping, position_ids, cache_position = (
             self._prepare_joint_training_backbone_inputs(model_inputs)
@@ -1057,7 +1082,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
         valid_action = None
         if action_attention_mask is not None:
-            valid_action = action_attention_mask.to(device=device, dtype=actions.dtype).unsqueeze(-1)
+            valid_action = action_attention_mask.to(device=device, dtype=action_expert_dtype).unsqueeze(-1)
             valid_action = _expand_mask(valid_action, num_flow_timesteps)
 
         rope_cache = None
@@ -1065,25 +1090,25 @@ class MolmoAct2Policy(PreTrainedPolicy):
             rope_cache = action_expert.blocks[0].self_attn.rope.build_cache(
                 seq_len=actions.shape[1],
                 device=device,
-                dtype=actions.dtype,
+                dtype=action_expert_dtype,
             )
 
         cross_mask = action_expert._build_cross_attention_mask(
             encoder_attention_mask,
             batch_size,
-            actions.dtype,
+            action_expert_dtype,
         )
         cross_mask = _expand_mask(cross_mask, num_flow_timesteps)
         self_mask = action_expert._build_self_attention_mask(
             action_attention_mask,
             actions.shape[1],
             device,
-            actions.dtype,
+            action_expert_dtype,
         )
         self_mask = _expand_mask(self_mask, num_flow_timesteps)
 
         conditioning = self._action_time_conditioning(action_expert, timesteps_flat)
-        action_hidden = action_expert.action_embed(xt_flat)
+        action_hidden = action_expert.action_embed(xt_flat.to(dtype=action_expert_dtype))
         if valid_action is not None:
             action_hidden = action_hidden * valid_action
 
@@ -1178,7 +1203,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             pred_velocity = pred_velocity * valid_action
         pred_velocity = pred_velocity.reshape(
             batch_size, num_flow_timesteps, actions.shape[1], actions.shape[2]
-        )
+        ).to(dtype=target_velocity.dtype)
 
         loss = F.mse_loss(pred_velocity, target_velocity, reduction="none")
         loss = _apply_action_chunk_padding_mask(loss, batch.get("action_horizon_is_pad"))
@@ -1726,22 +1751,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
     def _lora_target_modules(self, *, prefix: str) -> str:
         vlm_linear_leaves = "w1|w2|w3|wq|wk|wv|wo|att_proj|attn_out|ff_proj|ff_out|patch_embedding"
-        target_modules = rf"{prefix}\.(transformer|vision_backbone)\.(?:.*\.)?({vlm_linear_leaves})$"
-        if self.config.enable_lora_action_expert:
-            action_expert_linear_paths = (
-                r"time_embed\.(1|3)|"
-                r"action_embed|context_k_proj|context_v_proj|"
-                r"blocks\.\d+\.self_attn\.(qkv|out_proj)|"
-                r"blocks\.\d+\.cross_attn\.(q_proj|out_proj)|"
-                r"blocks\.\d+\.mlp\.(up_proj|gate_proj|down_proj)|"
-                r"blocks\.\d+\.modulation\.linear|"
-                r"final_layer\.(modulation\.linear|linear)"
-            )
-            target_modules = (
-                f"({target_modules}|"
-                rf"{prefix}\.action_expert\.({action_expert_linear_paths})$)"
-            )
-        return target_modules
+        return rf"{prefix}\.(transformer|vision_backbone)\.(?:.*\.)?({vlm_linear_leaves})$"
 
     def _build_inner_lora_config(self):
         require_package("peft", extra="molmoact2")
@@ -1757,8 +1767,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
         for param in self.model.parameters():
             param.requires_grad_(False)
         self.model = get_peft_model(self.model, peft_config)
-        if not self.config.enable_lora_action_expert:
-            self._unfreeze_action_expert_parameters()
+        self._unfreeze_action_expert_parameters()
         self.train(self.training)
 
     def _validate_peft_config(self, peft_config) -> None:

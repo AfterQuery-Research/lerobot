@@ -52,11 +52,13 @@ class RolloutStrategy(abc.ABC):
         self._warmup_flushed: bool = False
         self._cached_obs_processed: dict | None = None
 
-    def _init_engine(self, ctx: RolloutContext) -> None:
+    def _init_engine(self, ctx: RolloutContext, *, prepare_robot: bool = True) -> None:
         """Attach the inference engine and action interpolator, then start the backend.
 
         Creates an :class:`ActionInterpolator` from the config's
-        ``interpolation_multiplier`` and starts the inference engine.
+        ``interpolation_multiplier`` and starts the inference engine. When
+        ``prepare_robot`` is false, the robot remains unarmed and no policy-start
+        reset is commanded.
         Call this from ``setup()`` so strategies share identical
         initialisation without duplicating code.
         """
@@ -65,9 +67,27 @@ class RolloutStrategy(abc.ABC):
         logger.info("Starting inference engine...")
         self._engine.reset()
         self._engine.start()
+        if prepare_robot:
+            arm = getattr(ctx.hardware.robot_wrapper.inner, "arm", None)
+            if callable(arm):
+                logger.info("Arming robot after inference startup checks...")
+                arm()
+            self._reset_robot_for_policy(ctx.hardware)
+        else:
+            logger.info("Inference engine started without arming or resetting the robot")
         self._warmup_flushed = False
         self._cached_obs_processed = None
         logger.info("Inference engine started")
+
+    @staticmethod
+    def _reset_robot_for_policy(hw: HardwareContext) -> bool:
+        """Run an optional hardware-specific policy-start reset."""
+        reset_position = hw.robot_wrapper.reset_for_policy()
+        if reset_position is None:
+            return False
+        hw.initial_position = dict(reset_position)
+        logger.info("Captured configured policy start position (%d keys)", len(reset_position))
+        return True
 
     def _process_observation_and_notify(self, processors: ProcessorContext, obs_raw: dict) -> dict:
         """Run the observation processor and notify the engine — throttled to policy ticks.
@@ -118,18 +138,30 @@ class RolloutStrategy(abc.ABC):
 
     def _teardown_hardware(self, hw: HardwareContext, return_to_initial_position: bool = True) -> None:
         """Stop the inference engine, optionally return robot to initial position, and disconnect hardware."""
+        inference_failed = bool(self._engine is not None and getattr(self._engine, "failed", False))
         if self._engine is not None:
             logger.info("Stopping inference engine...")
             self._engine.stop()
         robot = hw.robot_wrapper.inner
         if robot.is_connected:
-            if return_to_initial_position and hw.initial_position:
+            disarm = getattr(robot, "disarm", None)
+            if inference_failed:
+                logger.warning("Inference failed; disarming without a return trajectory")
+                if callable(disarm):
+                    try:
+                        disarm()
+                    except Exception as exc:
+                        logger.warning("Could not disarm robot cleanly: %s", exc)
+            elif return_to_initial_position and hw.initial_position:
                 logger.info("Returning robot to initial position before shutdown...")
                 self._return_to_initial_position(hw)
             elif not return_to_initial_position:
-                logger.info(
-                    "Skipping return-to-initial-position (disabled by config); leaving robot in final pose."
-                )
+                logger.info("Skipping return-to-initial-position; no return action will be sent.")
+            if not inference_failed and callable(disarm):
+                try:
+                    disarm()
+                except Exception as exc:
+                    logger.warning("Could not disarm robot cleanly: %s", exc)
             logger.info("Disconnecting robot...")
             robot.disconnect()
         teleop = hw.teleop
@@ -143,6 +175,10 @@ class RolloutStrategy(abc.ABC):
         robot = hw.robot_wrapper
         target = hw.initial_position
         try:
+            if robot.reset_after_policy() is not None:
+                return
+            if robot.reset_for_policy() is not None:
+                return
             current_obs = robot.get_observation()
             current_pos = {k: v for k, v in current_obs.items() if k in target}
             steps = max(int(duration_s * fps), 1)
@@ -272,16 +308,19 @@ def send_next_action(
     obs_raw: dict,
     ctx: RolloutContext,
     interpolator: ActionInterpolator,
+    *,
+    execute: bool = True,
 ) -> dict | None:
     """Dispatch the next action to the robot.
 
     Pulls the next action tensor from the inference engine, feeds the
     interpolator, and sends the interpolated action through the
-    ``robot_action_processor`` to the robot.  Works identically for
-    sync and async backends — the rollout strategy never needs to branch.
+    ``robot_action_processor`` to the robot when ``execute`` is true.
+    Works identically for sync and async backends — the rollout strategy
+    never needs to branch.
 
-    Returns the action dict that was sent, or ``None`` if no action was
-    ready (e.g. empty async queue, interpolator not yet primed).
+    Returns the action dict that was produced, or ``None`` if no action
+    was ready (e.g. empty async queue, interpolator not yet primed).
     """
     engine = ctx.policy.inference
     features = ctx.data.dataset_features
@@ -301,5 +340,7 @@ def send_next_action(
         raise ValueError(f"Interpolated tensor length ({len(interp)}) != action keys ({len(ordered_keys)})")
     action_dict = {k: interp[i].item() for i, k in enumerate(ordered_keys)}
     processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
-    ctx.hardware.robot_wrapper.send_action(processed)
+    if execute:
+        ctx.hardware.robot_wrapper.send_action(processed)
+        engine.notify_action_sent()
     return action_dict

@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import abc
 import logging
+import math
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import draccus
 
@@ -28,7 +30,7 @@ from lerobot.robots.config import RobotConfig
 from lerobot.teleoperators.config import TeleoperatorConfig
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
-from .inference import InferenceEngineConfig, SyncInferenceConfig
+from .inference import InferenceEngineConfig, RemoteInferenceConfig, SyncInferenceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,21 @@ class BaseStrategyConfig(RolloutStrategyConfig):
     """Autonomous rollout with no data recording."""
 
     pass
+
+
+@RolloutStrategyConfig.register_subclass("action_probe")
+@dataclass
+class ActionProbeStrategyConfig(RolloutStrategyConfig):
+    """Inspect policy actions without dispatching them to the robot."""
+
+    action_log_path: Path = Path("outputs/policy_action_probe.jsonl")
+    console_log_interval_s: float = 1.0
+    # Keep the robot in safe idle by default. Enable only for a supervised reset test.
+    reset_robot: bool = False
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.console_log_interval_s) or self.console_log_interval_s < 0:
+            raise ValueError("console_log_interval_s must be non-negative")
 
 
 @RolloutStrategyConfig.register_subclass("sentry")
@@ -224,13 +241,13 @@ class RolloutConfig:
     robot: RobotConfig | None = None
     teleop: TeleoperatorConfig | None = None
 
-    # Policy (loaded from --policy.path via __post_init__)
+    # Policy (loaded from --policy.path for local inference)
     policy: PreTrainedConfig | None = None
 
     # Strategy (polymorphic: --strategy.type=base|sentry|highlight|dagger)
     strategy: RolloutStrategyConfig = field(default_factory=BaseStrategyConfig)
 
-    # Inference backend (polymorphic: --inference.type=sync|rtc)
+    # Inference backend (polymorphic: --inference.type=sync|rtc|remote)
     inference: InferenceEngineConfig = field(default_factory=SyncInferenceConfig)
 
     # Dataset (required for sentry, highlight, dagger; None for base)
@@ -242,8 +259,11 @@ class RolloutConfig:
     interpolation_multiplier: int = 1
     device: str | None = None
     task: str = ""
+    # Persist application logs and supported robot telemetry under one timestamped directory.
+    enable_logging: bool = False
+    logging_dir: Path = Path("outputs/runs")
     display_data: bool = False
-    # Visualization backend used when display_data is True: "rerun" or "foxglove".
+    # Visualization backend used when display_data is True: "rerun", "foxglove", or "local".
     display_mode: str = "rerun"
     # For "rerun": IP of a remote server to send to. For "foxglove": interface to bind the WebSocket
     # server to (127.0.0.1 for local only, 0.0.0.0 for all interfaces).
@@ -289,9 +309,13 @@ class RolloutConfig:
         if needs_dataset and (self.dataset is None or not self.dataset.repo_id):
             raise ValueError(f"{self.strategy.type} strategy requires --dataset.repo_id to be set")
 
-        if isinstance(self.strategy, BaseStrategyConfig) and self.dataset is not None:
+        if (
+            isinstance(self.strategy, (BaseStrategyConfig, ActionProbeStrategyConfig))
+            and self.dataset is not None
+        ):
             raise ValueError(
-                "Base strategy does not record data. Use sentry, highlight, or dagger for recording."
+                f"{self.strategy.type} strategy does not record datasets. "
+                "Use sentry, highlight, dagger, or episodic for recording."
             )
 
         # Sentry MUST use streaming encoding to avoid disk I/O blocking the control loop
@@ -342,6 +366,13 @@ class RolloutConfig:
             raise ValueError("--robot.type is required for rollout")
 
         policy_path = parser.get_path_arg("policy")
+        is_remote = isinstance(self.inference, RemoteInferenceConfig)
+        if is_remote and policy_path:
+            raise ValueError(
+                "Remote inference does not load --policy.path on the robot computer. "
+                "Configure the checkpoint on lerobot-policy-server and optionally set "
+                "--inference.requested_model_id to pin the expected model."
+            )
         if policy_path:
             yaml_overrides = parser.get_yaml_overrides("policy")
             cli_overrides = parser.get_cli_overrides("policy") or []
@@ -355,8 +386,10 @@ class RolloutConfig:
                 cli_overrides=policy_overrides,
             )
             self.policy.pretrained_path = policy_path
-        if self.policy is None:
+        if self.policy is None and not is_remote:
             raise ValueError("--policy.path is required for rollout")
+        if self.policy is not None and is_remote:
+            raise ValueError("Remote inference cannot be combined with an in-process policy config")
 
         # --- Task resolution ---
         # When any --dataset.* flag is passed, draccus creates a DatasetRecordConfig with single_task="".
@@ -373,7 +406,10 @@ class RolloutConfig:
         # Resolve device from the policy config when not explicitly set so all
         # components (policy.to, preprocessor, inference engine) use the same
         # device string instead of inconsistent fallbacks.
-        if self.device is None or not is_torch_device_available(self.device):
+        if is_remote:
+            self.device = "cpu"
+        elif self.device is None or not is_torch_device_available(self.device):
+            assert self.policy is not None
             resolved = self.policy.device
             if resolved:
                 self.device = resolved

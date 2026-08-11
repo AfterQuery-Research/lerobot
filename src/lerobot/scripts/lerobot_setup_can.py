@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Setup and debug CAN interfaces for Damiao motors (e.g., OpenArms).
+Discover, set up, and debug SocketCAN interfaces.
 
 Examples:
 
@@ -36,6 +36,18 @@ Speed test:
 ```shell
 lerobot-setup-can --mode=speed --interfaces=can0
 ```
+
+Discover USB adapter serials without sending CAN frames:
+```shell
+lerobot-setup-can --mode=list
+```
+
+Set up two classic-CAN YAM adapters at 1 Mbit/s without persistent udev names:
+```shell
+lerobot-setup-can \
+    --left_adapter_serial=LEFT_SERIAL \
+    --right_adapter_serial=RIGHT_SERIAL
+```
 """
 
 import subprocess
@@ -45,6 +57,13 @@ from dataclasses import dataclass, field
 
 import draccus
 
+from lerobot.utils.can import (
+    CANInterfaceInfo,
+    can_interface_readiness_error,
+    discover_can_interfaces,
+    format_can_interfaces,
+    resolve_can_interface,
+)
 from lerobot.utils.import_utils import _can_available
 
 MOTOR_NAMES = {
@@ -61,17 +80,68 @@ MOTOR_NAMES = {
 
 @dataclass
 class CANSetupConfig:
-    mode: str = "test"
-    interfaces: str = "can0"  # Comma-separated, e.g. "can0,can1,can2,can3"
+    # With no mode, serial selectors imply setup and no selectors imply a read-only listing.
+    mode: str | None = None
+    interfaces: str | None = None  # Comma-separated, e.g. "can0,can1,can2,can3"
+    left_adapter_serial: str | None = None
+    right_adapter_serial: str | None = None
     bitrate: int = 1000000
     data_bitrate: int = 5000000
-    use_fd: bool = True
+    # Existing interface-name workflows default to CAN FD. Serial-selected YAM setup defaults to classic CAN.
+    use_fd: bool | None = None
     motor_ids: list[int] = field(default_factory=lambda: list(range(0x01, 0x09)))
     timeout: float = 1.0
     speed_iterations: int = 100
 
-    def get_interfaces(self) -> list[str]:
-        return [i.strip() for i in self.interfaces.split(",") if i.strip()]
+    def __post_init__(self) -> None:
+        for name in ("left_adapter_serial", "right_adapter_serial"):
+            value = getattr(self, name)
+            if value is not None:
+                value = value.strip()
+                if not value:
+                    raise ValueError(f"{name} must not be empty")
+                setattr(self, name, value)
+        if (
+            self.left_adapter_serial is not None
+            and self.right_adapter_serial is not None
+            and self.left_adapter_serial.casefold() == self.right_adapter_serial.casefold()
+        ):
+            raise ValueError("left_adapter_serial and right_adapter_serial must be different")
+        if self.interfaces is not None and self.adapter_serials:
+            raise ValueError("Use either interfaces or adapter serials, not both")
+        if self.bitrate <= 0 or self.data_bitrate <= 0:
+            raise ValueError("CAN bitrates must be positive")
+
+    @property
+    def adapter_serials(self) -> tuple[str, ...]:
+        return tuple(
+            serial for serial in (self.left_adapter_serial, self.right_adapter_serial) if serial is not None
+        )
+
+    @property
+    def effective_mode(self) -> str:
+        if self.mode is not None:
+            return self.mode
+        return "setup" if self.adapter_serials else "list"
+
+    @property
+    def effective_use_fd(self) -> bool:
+        if self.use_fd is not None:
+            return self.use_fd
+        return not bool(self.adapter_serials)
+
+    def get_interfaces(self, discovered: list[CANInterfaceInfo] | None = None) -> list[str]:
+        if self.adapter_serials:
+            interfaces = discover_can_interfaces() if discovered is None else discovered
+            selected = [
+                resolve_can_interface(serial, interfaces=interfaces).name for serial in self.adapter_serials
+            ]
+            if len(selected) != len(set(selected)):
+                raise RuntimeError("Configured CAN adapter serials resolved to the same interface")
+            return selected
+        if self.interfaces is None:
+            return ["can0"]
+        return [interface.strip() for interface in self.interfaces.split(",") if interface.strip()]
 
 
 def check_interface_status(interface: str) -> tuple[bool, str, bool]:
@@ -101,6 +171,8 @@ def setup_interface(interface: str, bitrate: int, data_bitrate: int, use_fd: boo
         cmd = ["sudo", "ip", "link", "set", interface, "type", "can", "bitrate", str(bitrate)]
         if use_fd:
             cmd.extend(["dbitrate", str(data_bitrate), "fd", "on"])
+        else:
+            cmd.extend(["fd", "off"])
 
         result = subprocess.run(cmd, capture_output=True, text=True)  # nosec B607
         if result.returncode != 0:
@@ -172,7 +244,7 @@ def test_interface(cfg: CANSetupConfig, interface: str):
 
     try:
         kwargs = {"channel": interface, "interface": "socketcan", "bitrate": cfg.bitrate}
-        if cfg.use_fd:
+        if cfg.effective_use_fd:
             kwargs.update({"data_bitrate": cfg.data_bitrate, "fd": True})
         bus = can.interface.Bus(**kwargs)
     except Exception as e:
@@ -186,7 +258,7 @@ def test_interface(cfg: CANSetupConfig, interface: str):
 
         for motor_id in cfg.motor_ids:
             motor_name = MOTOR_NAMES.get(motor_id, f"motor_0x{motor_id:02X}")
-            responses, error = test_motor(bus, motor_id, cfg.timeout, cfg.use_fd)
+            responses, error = test_motor(bus, motor_id, cfg.timeout, cfg.effective_use_fd)
 
             if error:
                 print(f"  Motor 0x{motor_id:02X} ({motor_name}): ✗ {error}")
@@ -223,7 +295,7 @@ def speed_test(cfg: CANSetupConfig, interface: str):
 
     try:
         kwargs = {"channel": interface, "interface": "socketcan", "bitrate": cfg.bitrate}
-        if cfg.use_fd:
+        if cfg.effective_use_fd:
             kwargs.update({"data_bitrate": cfg.data_bitrate, "fd": True})
         bus = can.interface.Bus(**kwargs)
     except Exception as e:
@@ -232,7 +304,7 @@ def speed_test(cfg: CANSetupConfig, interface: str):
 
     responding_motor = None
     for motor_id in cfg.motor_ids:
-        responses, _ = test_motor(bus, motor_id, 0.5, cfg.use_fd)
+        responses, _ = test_motor(bus, motor_id, 0.5, cfg.effective_use_fd)
         if responses:
             responding_motor = motor_id
             break
@@ -251,7 +323,7 @@ def speed_test(cfg: CANSetupConfig, interface: str):
             arbitration_id=responding_motor,
             data=[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC],
             is_extended_id=False,
-            is_fd=cfg.use_fd,
+            is_fd=cfg.effective_use_fd,
         )
         bus.send(msg)
         resp = bus.recv(timeout=0.1)
@@ -275,24 +347,42 @@ def run_setup(cfg: CANSetupConfig):
     print("=" * 50)
     print("CAN Interface Setup")
     print("=" * 50)
-    print(f"Mode: {'CAN FD' if cfg.use_fd else 'CAN 2.0'}")
+    print(f"Mode: {'CAN FD' if cfg.effective_use_fd else 'Classic CAN'}")
     print(f"Bitrate: {cfg.bitrate / 1_000_000:.1f} Mbps")
-    if cfg.use_fd:
+    if cfg.effective_use_fd:
         print(f"Data bitrate: {cfg.data_bitrate / 1_000_000:.1f} Mbps")
     print()
 
     interfaces = cfg.get_interfaces()
     for interface in interfaces:
         print(f"Configuring {interface}...")
-        if setup_interface(interface, cfg.bitrate, cfg.data_bitrate, cfg.use_fd):
-            is_up, status, _ = check_interface_status(interface)
-            print(f"  ✓ {interface}: {status}")
-        else:
-            print(f"  ✗ {interface}: Failed")
+        if not setup_interface(interface, cfg.bitrate, cfg.data_bitrate, cfg.effective_use_fd):
+            raise RuntimeError(f"Failed to configure {interface}")
+
+        discovered = discover_can_interfaces()
+        configured = next((item for item in discovered if item.name == interface), None)
+        if configured is None:
+            raise RuntimeError(f"Configured interface {interface} disappeared")
+        readiness_error = can_interface_readiness_error(
+            configured,
+            bitrate=cfg.bitrate,
+            use_fd=cfg.effective_use_fd,
+        )
+        if readiness_error is not None:
+            raise RuntimeError(f"Interface {interface} failed verification: {readiness_error}")
+        print(f"  ✓ {interface}: {configured.state}, {configured.bitrate} bit/s")
 
     print("\nSetup complete!")
-    print("\nNext: Test motors with:")
-    print(f"  lerobot-setup-can --mode=test --interfaces {','.join(interfaces)}")
+    if cfg.adapter_serials:
+        print("No CAN frames or motor commands were sent.")
+    else:
+        print("\nOptional motor test (this sends enable/disable CAN frames):")
+        print(f"  lerobot-setup-can --mode=test --interfaces {','.join(interfaces)}")
+
+
+def run_list() -> None:
+    """List interfaces without configuring links or sending CAN frames."""
+    print(format_can_interfaces(discover_can_interfaces()))
 
 
 def run_test(cfg: CANSetupConfig):
@@ -301,7 +391,7 @@ def run_test(cfg: CANSetupConfig):
     print("CAN Motor Test")
     print("=" * 50)
     print(f"Testing motors 0x{min(cfg.motor_ids):02X}-0x{max(cfg.motor_ids):02X}")
-    print(f"Mode: {'CAN FD' if cfg.use_fd else 'CAN 2.0'}")
+    print(f"Mode: {'CAN FD' if cfg.effective_use_fd else 'Classic CAN'}")
     print()
 
     interfaces = cfg.get_interfaces()
@@ -337,19 +427,22 @@ def run_speed(cfg: CANSetupConfig):
 
 @draccus.wrap()
 def setup_can(cfg: CANSetupConfig):
-    if not _can_available:
+    mode = cfg.effective_mode
+    if mode in {"test", "speed"} and not _can_available:
         print("Error: python-can not installed. Install with: pip install python-can")
         sys.exit(1)
 
-    if cfg.mode == "setup":
+    if mode == "list":
+        run_list()
+    elif mode == "setup":
         run_setup(cfg)
-    elif cfg.mode == "test":
+    elif mode == "test":
         run_test(cfg)
-    elif cfg.mode == "speed":
+    elif mode == "speed":
         run_speed(cfg)
     else:
-        print(f"Unknown mode: {cfg.mode}")
-        print("Available modes: setup, test, speed")
+        print(f"Unknown mode: {mode}")
+        print("Available modes: list, setup, test, speed")
         sys.exit(1)
 
 

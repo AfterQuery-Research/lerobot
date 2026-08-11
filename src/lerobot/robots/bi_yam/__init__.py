@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+
+# Copyright 2026 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from .bi_yam import BiYAMFollower
+from .config_bi_yam import (
+    BI_YAM_POLICY_END_POSITION,
+    BI_YAM_POLICY_START_POSITION,
+    YAM_SCALAR_KEYS,
+    BiYAMFollowerConfig,
+    YAMArmConfig,
+    YAMGripperCalibration,
+)
+from .sim_bi_yam import BiYAMSimulatorRobot, BiYAMSimulatorRobotConfig
+
+__all__ = [
+    "BI_YAM_POLICY_END_POSITION",
+    "BI_YAM_POLICY_START_POSITION",
+    "BiYAMFollower",
+    "BiYAMFollowerConfig",
+    "BiYAMSimulatorRobot",
+    "BiYAMSimulatorRobotConfig",
+    "YAMArmConfig",
+    "YAMGripperCalibration",
+    "YAM_SCALAR_KEYS",
+]

@@ -16,18 +16,18 @@
 
 Selects a visualization backend at runtime via a display-mode string (e.g. a ``--display_mode`` CLI
 flag) so callers never branch on the backend. The concrete implementations live in
-:mod:`lerobot.utils.rerun_visualization` and :mod:`lerobot.utils.foxglove_visualization`; importing
-this module does not import ``rerun`` or ``foxglove`` (each backend imports its SDK lazily behind a
-``require_package`` guard).
+:mod:`lerobot.utils.rerun_visualization`, :mod:`lerobot.utils.foxglove_visualization`, and
+:mod:`lerobot.utils.local_visualization`; optional backend SDKs are imported lazily.
 """
 
 from lerobot.lerobot_types import RobotAction, RobotObservation
 
 from .foxglove_visualization import init_foxglove, log_foxglove_data, shutdown_foxglove
+from .local_visualization import init_local_visualization, log_local_data, shutdown_local_visualization
 from .rerun_visualization import init_rerun, log_rerun_data, shutdown_rerun
 
 # Visualization backends selectable at runtime via a display-mode string (e.g. a --display_mode flag).
-VISUALIZATION_MODES = ("rerun", "foxglove")
+VISUALIZATION_MODES = ("rerun", "foxglove", "local")
 
 
 def init_visualization(
@@ -36,6 +36,7 @@ def init_visualization(
     session_name: str = "lerobot_control_loop",
     ip: str | None = None,
     port: int | None = None,
+    task: str = "",
 ) -> None:
     """Initializes the visualization backend selected by ``display_mode``.
 
@@ -48,6 +49,8 @@ def init_visualization(
         init_rerun(session_name=session_name, ip=ip, port=port)
     elif display_mode == "foxglove":
         init_foxglove(host=ip or "127.0.0.1", port=port)
+    elif display_mode == "local":
+        init_local_visualization(task=task)
     else:
         raise ValueError(f"Unknown display_mode '{display_mode}'. Expected one of {VISUALIZATION_MODES}.")
 
@@ -64,6 +67,8 @@ def log_visualization_data(
         log_rerun_data(observation=observation, action=action, compress_images=compress_images)
     elif display_mode == "foxglove":
         log_foxglove_data(observation=observation, action=action, compress_images=compress_images)
+    elif display_mode == "local":
+        log_local_data(observation=observation, action=action, compress_images=compress_images)
     else:
         raise ValueError(f"Unknown display_mode '{display_mode}'. Expected one of {VISUALIZATION_MODES}.")
 
@@ -75,5 +80,7 @@ def shutdown_visualization(display_mode: str) -> None:
         shutdown_rerun()
     elif display_mode == "foxglove":
         shutdown_foxglove()
+    elif display_mode == "local":
+        shutdown_local_visualization()
     else:
         raise ValueError(f"Unknown display_mode '{display_mode}'. Expected one of {VISUALIZATION_MODES}.")

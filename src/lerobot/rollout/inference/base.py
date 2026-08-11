@@ -49,8 +49,8 @@ class InferenceEngine(abc.ABC):
 
     Optional hooks
     --------------
-    ``notify_observation`` / ``pause`` / ``resume`` have a no-op default
-    so rollout strategies can invoke them unconditionally.
+    ``notify_observation`` / ``notify_action_sent`` / ``pause`` / ``resume``
+    have a no-op default so rollout strategies can invoke them unconditionally.
     """
 
     @abc.abstractmethod
@@ -71,6 +71,9 @@ class InferenceEngine(abc.ABC):
 
     def notify_observation(self, obs: dict) -> None:  # noqa: B027
         """Publish the latest processed observation.  Default: no-op."""
+
+    def notify_action_sent(self) -> None:  # noqa: B027
+        """Report that the most recently retrieved action reached hardware. Default: no-op."""
 
     def pause(self) -> None:  # noqa: B027
         """Pause background inference.  Default: no-op."""

@@ -22,6 +22,7 @@ real robots.
 Strategies
 ----------
     --strategy.type=base       Autonomous rollout, no recording
+    --strategy.type=action_probe  Inspect actions without executing them
     --strategy.type=sentry     Continuous recording with auto-upload
     --strategy.type=highlight  Ring buffer + keystroke save
     --strategy.type=dagger     Human-in-the-loop (DAgger / RaC)
@@ -31,6 +32,7 @@ Inference backends
 ------------------
     --inference.type=sync      One policy call per control tick (default)
     --inference.type=rtc       Real-Time Chunking for slow VLA models
+    --inference.type=remote    Action chunks from lerobot-policy-server
 
 Usage examples
 --------------
@@ -151,6 +153,10 @@ Usage examples
 """
 
 import logging
+from datetime import UTC, datetime
+from pathlib import Path
+
+import draccus
 
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
@@ -162,6 +168,7 @@ from lerobot.robots import (  # noqa: F401
     bi_openarm_follower,
     bi_rebot_b601_follower,
     bi_so_follower,
+    bi_yam,
     earthrover_mini_plus,
     hope_jr,
     koch_follower,
@@ -199,10 +206,41 @@ from lerobot.utils.visualization_utils import init_visualization, shutdown_visua
 logger = logging.getLogger(__name__)
 
 
+def _configure_rollout_logging(cfg: RolloutConfig, *, timestamp: str | None = None) -> Path | None:
+    run_dir = None
+    log_file = None
+    if cfg.enable_logging:
+        timestamp = timestamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        logging_root = cfg.logging_dir.expanduser()
+        logging_root.mkdir(parents=True, exist_ok=True)
+        run_dir = logging_root / timestamp
+        suffix = 1
+        while True:
+            try:
+                run_dir.mkdir()
+                break
+            except FileExistsError:
+                run_dir = logging_root / f"{timestamp}-{suffix}"
+                suffix += 1
+
+        log_file = run_dir / "rollout.log"
+        if cfg.robot is not None and hasattr(cfg.robot, "control_telemetry_path"):
+            cfg.robot.control_telemetry_path = run_dir / "control.jsonl"
+
+    init_logging(log_file=log_file)
+    if run_dir is not None:
+        config_path = run_dir / "resolved_config.yaml"
+        with config_path.open("w", encoding="utf-8") as config_file:
+            draccus.dump(cfg, config_file, omit_defaults=False)
+        logger.info("Writing rollout artifacts to %s", run_dir)
+        logger.info("Wrote resolved rollout configuration to %s", config_path)
+    return run_dir
+
+
 @parser.wrap()
 def rollout(cfg: RolloutConfig):
     """Main entry point for policy deployment."""
-    init_logging()
+    _configure_rollout_logging(cfg)
 
     if cfg.display_data:
         logger.info(
@@ -211,7 +249,14 @@ def rollout(cfg: RolloutConfig):
             cfg.display_ip,
             cfg.display_port,
         )
-        init_visualization(cfg.display_mode, session_name="rollout", ip=cfg.display_ip, port=cfg.display_port)
+        task = cfg.dataset.single_task if cfg.dataset else cfg.task
+        init_visualization(
+            cfg.display_mode,
+            session_name="rollout",
+            ip=cfg.display_ip,
+            port=cfg.display_port,
+            task=task,
+        )
 
     signal_handler = ProcessSignalHandler(use_threads=True, display_pid=False)
     shutdown_event = signal_handler.shutdown_event
@@ -234,6 +279,9 @@ def rollout(cfg: RolloutConfig):
         strategy.run(ctx)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except Exception:
+        logger.exception("Rollout failed")
+        raise
     finally:
         strategy.teardown(ctx)
         if cfg.display_data:

@@ -201,7 +201,7 @@ Teleop is optional — if omitted the robot holds its position during the reset 
 
 ## Inference Backends
 
-Select a backend with `--inference.type=<name>`. All strategies work with both backends.
+Select a backend with `--inference.type=<name>`. All strategies work with each backend.
 
 ### Sync (default)
 
@@ -239,13 +239,34 @@ lerobot-rollout \
 
 See the [Real-Time Chunking](./rtc) guide for details on tuning RTC parameters.
 
+### Remote (`--inference.type=remote`)
+
+Remote inference keeps the policy and GPU on a policy server while `lerobot-rollout`
+runs on the robot computer. The client sends typed observations and asynchronously
+queues returned action chunks. Do not pass `--policy.path` to the client; select the
+checkpoint when starting `lerobot-policy-server`.
+
+```bash
+lerobot-rollout \
+    --strategy.type=base \
+    --inference.type=remote \
+    --inference.server_address=policy-host:8081 \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --robot.type=bi_yam_simulator \
+    --task="Pick up the cube" \
+    --duration=60
+```
+
+See [Remote Policy Inference](./remote_inference) for server setup, dual-YAM
+hardware configuration, and simulator testing.
+
 ---
 
 ## Common Flags
 
 | Flag                              | Description                                                       | Default |
 | --------------------------------- | ----------------------------------------------------------------- | ------- |
-| `--policy.path`                   | **Required.** HF Hub model ID or local checkpoint path            | --      |
+| `--policy.path`                   | Required for local inference; omitted for remote inference        | --      |
 | `--robot.type`                    | **Required.** Robot type (e.g. `so100_follower`, `koch_follower`) | --      |
 | `--robot.port`                    | Serial port for the robot                                         | --      |
 | `--robot.cameras`                 | Camera configuration (JSON dict)                                  | --      |

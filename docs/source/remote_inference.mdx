@@ -1,0 +1,407 @@
+# Remote Policy Inference
+
+Remote inference runs the policy on a GPU server and controls hardware from a
+separate robot computer:
+
+```text
+robot + cameras -> lerobot-rollout -> network -> lerobot-policy-server -> actions
+```
+
+The client only needs a reachable server address. A router, SSH relay, or other
+network proxy can sit between the machines without changing either command.
+
+## Install
+
+On a fresh Ubuntu machine, install the system packages needed to build the
+ARM64 dependencies that do not publish wheels:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential git linux-libc-dev pkg-config python3-dev
+```
+
+Install `uv`, then reopen the shell or source the environment file created by
+the installer. The commands below use `--locked`, so installation fails instead
+of modifying `uv.lock` when project metadata and the checked-in lock disagree.
+
+On the policy server, install the extra for the policy family you will serve:
+
+```bash
+# MolmoAct2
+uv sync --locked --extra remote --extra molmoact2
+
+# Pi0 / Pi0.5
+uv sync --locked --extra remote --extra pi
+```
+
+On the dual-YAM computer:
+
+```bash
+uv sync --locked --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
+```
+
+## Start the server
+
+For MolmoAct2, run this on the GPU machine:
+
+```bash
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path=allenai/MolmoAct2-BimanualYAM \
+    --policy.policy_type=molmoact2 \
+    --policy.norm_tag=yam_dual_molmoact2 \
+    --policy.model_dtype=bfloat16 \
+    --policy.inference_action_mode=continuous \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
+For a saved Pi0.5 LeRobot checkpoint, the checkpoint already contains its
+policy configuration, normalization statistics, and observation rename map:
+
+```bash
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path=ASethi04/pi05-BimanualYAM-oranges-uw-notop \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
+## Discover client hardware
+
+### Find CAN adapter serials
+
+Stop robot-control processes, then list the adapters without opening a CAN bus
+or sending frames:
+
+```bash
+uv run lerobot-setup-can
+```
+
+The serial belongs to the USB-to-CAN adapter, not to an arm. On a new machine,
+connect one adapter at a time, trace its cable to the left or right arm, and
+label the adapter or cable. The serial remains stable if Linux later assigns a
+different `canN` name.
+
+### Find camera identifiers
+
+#### RealSense cameras
+
+Discover the connected RealSense cameras and capture a preview from each one:
+
+```bash
+uv run lerobot-find-cameras realsense
+```
+
+The command saves the previews under `outputs/captured_images` in the current
+repository. Each filename contains its camera serial:
+
+```text
+outputs/captured_images/realsense_<serial-number>.png
+```
+
+#### UVC/OpenCV cameras
+
+Generic USB cameras, including the tested global-shutter ultrawide cameras, use
+LeRobot's OpenCV camera backend:
+
+```bash
+uv run lerobot-find-cameras opencv
+```
+
+The command saves previews such as
+`outputs/captured_images/opencv__dev_video0.png`. Match each preview's
+`/dev/videoN` identifier to the `Stable path` printed by the command. Use the
+stable path in the rollout configuration, for example:
+
+```text
+/dev/v4l/by-path/pci-...-video-index0
+```
+
+Do not rely on `/dev/videoN`; those numbers can change after a reboot or
+replug. A `by-path` identifier remains stable while the camera uses the same
+physical USB port. Rediscover the paths after moving cameras between ports.
+This is especially important when multiple cameras advertise the same serial
+number.
+
+### Assign camera roles
+
+Inspect the saved previews and decide which physical camera supplies each
+logical `top`, `left`, and `right` view. If two views are ambiguous, cover one
+lens or connect one camera at a time and rerun the appropriate discovery
+command.
+
+For an OpenCV preview such as `opencv__dev_video2.png`, find the camera block
+whose `Id` is `/dev/video2` in the command output, then use that block's complete
+`Stable path` as the camera identifier. OpenCV discovery may also show video
+streams belonging to a connected RealSense camera; configure the RealSense by
+serial using the RealSense results instead.
+
+Camera order is part of the model contract. Three-camera checkpoints use
+`top`, `left`, `right`; no-top checkpoints use `left`, `right`.
+
+## Set client values
+
+After identifying the hardware, first set the common values for this
+installation once per shell on the robot computer:
+
+```bash
+SERVER=<reachable-server-ip>:8081
+MODEL_ID=<served-checkpoint-id>
+TASK=<checkpoint-task>
+ROBOT_ID=<robot-id>
+LEFT_CAN=<left-can-adapter-serial>
+RIGHT_CAN=<right-can-adapter-serial>
+DISPLAY_DATA=false
+DISPLAY_MODE=local
+```
+
+Then choose the camera block that matches the installed hardware.
+
+### Three RealSense cameras
+
+For three RealSense cameras, each camera identifier is its RealSense serial:
+
+```bash
+TOP_CAMERA=<top-realsense-serial>
+LEFT_CAMERA=<left-realsense-serial>
+RIGHT_CAMERA=<right-realsense-serial>
+
+CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: intelrealsense, serial_number_or_name: '$LEFT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, right: {type: intelrealsense, serial_number_or_name: '$RIGHT_CAMERA', width: 640, height: 360, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}}"
+```
+
+### RealSense top with OpenCV sides
+
+For a RealSense top camera and two UVC/OpenCV side cameras, the top identifier
+is a RealSense serial while the side identifiers are the complete `Stable path`
+values printed by OpenCV discovery:
+
+```bash
+TOP_CAMERA=<top-realsense-serial>
+LEFT_CAMERA=<left-opencv-stable-path>
+RIGHT_CAMERA=<right-opencv-stable-path>
+
+CAMERAS="{top: {type: intelrealsense, serial_number_or_name: '$TOP_CAMERA', width: 640, height: 480, fps: 30, use_rgb: true, use_depth: false, warmup_s: 2}, left: {type: opencv, index_or_path: '$LEFT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}, right: {type: opencv, index_or_path: '$RIGHT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
+```
+
+The ultrawides were validated at `1280x720`, 30 FPS, using MJPEG. They do not
+offer the previous RealSense side-camera profile of `640x360`.
+
+### Two OpenCV sides (no-top checkpoint)
+
+For a checkpoint trained without a top view, configure only the two complete
+OpenCV stable paths:
+
+```bash
+LEFT_CAMERA=<left-opencv-stable-path>
+RIGHT_CAMERA=<right-opencv-stable-path>
+
+CAMERAS="{left: {type: opencv, index_or_path: '$LEFT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}, right: {type: opencv, index_or_path: '$RIGHT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
+```
+
+`SERVER` is the policy-server address reachable from the robot computer.
+`MODEL_ID` must exactly match the server's `--policy.pretrained_name_or_path`.
+Use the checkpoint's training instruction for `TASK`; for the Pi0.5 oranges
+checkpoints above, use `TASK="Put all oranges in the bowl"`.
+`ROBOT_ID` is a stable name chosen for this physical robot; it selects the
+robot's local calibration file. Use the same ID every time on that robot.
+`DISPLAY_DATA=false` keeps the local camera preview disabled by default. Set it
+to `true` from the robot desktop when a camera preview is needed;
+`DISPLAY_MODE=local` selects that local preview window.
+
+### Configure CAN
+
+Configure both links after setting the adapter serials, and again after a reboot
+or replug:
+
+```bash
+uv run lerobot-setup-can \
+    --left_adapter_serial="$LEFT_CAN" \
+    --right_adapter_serial="$RIGHT_CAN"
+
+ip -details link show type can
+```
+
+Repeat `lerobot-setup-can` whenever either robot arm's USB-to-CAN adapter is
+unplugged and replugged.
+
+Look for two CAN interfaces in the output. Both should include `UP` and
+`LOWER_UP`, report `state UP`, show `can state ERROR-ACTIVE`, and use
+`bitrate 1000000`. `ERROR-ACTIVE` is the normal healthy CAN state; it means the
+controller has not entered an error-passive or bus-off state. Do not continue
+if either interface is missing, down, `STOPPED`, `ERROR-PASSIVE`, or `BUS-OFF`,
+or if it reports a different bitrate.
+
+## Calibrate once
+
+Calibration intentionally moves one gripper at a time and must be supervised.
+Run it when installing a robot, replacing a gripper, or deliberately
+recalibrating:
+
+```bash
+uv run lerobot-calibrate \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.calibration_side=left \
+    --robot.left_arm_config.allow_gripper_calibration=true
+
+uv run lerobot-calibrate \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.calibration_side=right \
+    --robot.right_arm_config.allow_gripper_calibration=true
+```
+
+Both results are stored in:
+
+```text
+~/.cache/huggingface/lerobot/calibration/robots/bi_yam_follower/<robot-id>.json
+```
+
+Normal startup refuses to create the arm workers if either gripper calibration
+is missing. Calibration values are local hardware data and are not committed to
+the repository.
+
+## Verify without motion
+
+Use `action_probe` before an autonomous rollout:
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=action_probe \
+    --strategy.reset_robot=false \
+    --strategy.action_log_path=outputs/yam-policy-actions.jsonl \
+    --inference.type=remote \
+    --inference.server_address="$SERVER" \
+    --inference.requested_model_id="$MODEL_ID" \
+    --inference.execution_horizon=15 \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.cameras="$CAMERAS" \
+    --task="$TASK" \
+    --fps=30 \
+    --duration=10
+```
+
+This mode reads live joint and gripper state, captures the configured real
+cameras, sends observations to the real policy server, and validates returned actions.
+The robot stays in safe idle: probe mode does not arm, reset, return to a pose,
+or call `robot.send_action`. Every returned target is written to
+`outputs/yam-policy-actions.jsonl` with `executed: false`.
+
+To test the reset separately, under supervision, add
+`--strategy.reset_robot=true`. Returned policy actions are still discarded.
+
+## Run with motion
+
+The following command arms the robot, moves it to the configured reset pose,
+and executes policy actions. Run it only with the workspace clear and a stop
+method ready:
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=base \
+    --enable_logging=true \
+    --inference.type=remote \
+    --inference.server_address="$SERVER" \
+    --inference.requested_model_id="$MODEL_ID" \
+    --inference.execution_horizon=15 \
+    --robot.type=bi_yam_follower \
+    --robot.id="$ROBOT_ID" \
+    --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
+    --robot.right_arm_config.adapter_serial="$RIGHT_CAN" \
+    --robot.max_joint_delta=0.10 \
+    --robot.max_gripper_delta=0.03 \
+    --robot.cameras="$CAMERAS" \
+    --task="$TASK" \
+    --display_data="$DISPLAY_DATA" \
+    --display_mode="$DISPLAY_MODE" \
+    --fps=30 \
+    --duration=60
+```
+
+MolmoAct2 predicts 30 future actions per request. `execution_horizon=15`
+commits the client to 15 latency-aligned actions from the active prediction
+before switching to the next one. The next request is still made
+asynchronously: the client measures recent round-trip latency and starts
+inference early enough for the result to arrive near the execution boundary.
+An early result waits for that boundary; if a result is late, the client keeps
+executing the unused tail of the previous 30-action chunk instead of stopping.
+Returned actions that became stale while inference was running are discarded
+by timestep before the chunk can become active.
+
+Shorter execution horizons react to new observations sooner but can switch
+between inconsistent trajectories more often. Longer horizons preserve motion
+more coherently but run open-loop for longer. The tested starting value for the
+30 Hz dual-YAM setup is `15`, or 0.5 seconds of committed control.
+
+`--enable_logging=true` creates a UTC-timestamped directory for each invocation
+under `outputs/runs/` containing `rollout.log`, `control.jsonl`, and
+`resolved_config.yaml`. The configuration snapshot is Draccus-compatible and
+includes the complete resolved rollout configuration, including defaults and
+the nested inference, robot, and camera settings used for that invocation.
+Telemetry records requested, bounded, applied, and measured targets, tracking
+errors, and clipped joints. The application log records LeRobot messages,
+including remote chunk timing and control summaries, at `DEBUG` level. Because
+each run has its own directory, its artifacts are not mixed with or overwritten
+by another run. Logging defaults to disabled; pass `--logging_dir=<path>` to
+change the output root.
+
+## Reset and safety behavior
+
+The default reset target is:
+
+```text
+[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]
+```
+
+This is six zero joint targets and an open gripper for each arm. Reset waypoints
+are at most `0.01` apart at 30 Hz and capped at 100 interpolation steps. The
+client holds the final target, requires every value within `0.035`, and idles
+both arms if the pose is not reached within 30 seconds.
+
+Policy commands use the tested operational joint bounds, per-tick limits of
+`0.10` radians for joints and `0.03` normalized units for grippers, and a
+one-second command watchdog. Empty action-queue iterations do not advance the
+execution tick.
+
+The client also validates model identity, camera order and dimensions, state and
+action order, task, protocol version, deadlines, and message sizes. A transport,
+validation, decoding, or inference failure clears queued actions and begins
+shutdown. The client does not automatically reconnect and resume motion.
+
+## Optional checks
+
+### Camera and server only
+
+`lerobot-policy-probe` opens the cameras and runs one inference without
+constructing the robot or importing i2rt. Because it cannot read the arms, state
+must be supplied explicitly. This is useful before CAN hardware is available;
+the full `action_probe` above is preferred once the robot is connected.
+
+### Simulator
+
+The shared-world simulator exercises the same remote protocol and 14-value
+state/action schema:
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=action_probe \
+    --inference.type=remote \
+    --inference.server_address="$SERVER" \
+    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
+    --inference.execution_horizon=15 \
+    --robot.type=bi_yam_simulator \
+    --robot.backend=mujoco \
+    --task="Pick up the oranges and put them in the bowl" \
+    --fps=30 \
+    --duration=10
+```
+
+Use `--robot.backend=fallback` when MuJoCo or its renderer is unavailable.
+Simulation validates transport, timing, schema, and lifecycle behavior, but not
+CAN timing, camera placement, calibration, payloads, or collision safety.

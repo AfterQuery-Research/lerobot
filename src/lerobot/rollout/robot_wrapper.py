@@ -47,6 +47,22 @@ class ThreadSafeRobot:
         with self._lock:
             return self._robot.send_action(action)
 
+    def reset_for_policy(self) -> dict[str, Any] | None:
+        """Run an optional robot-specific policy-start reset under the I/O lock."""
+        reset = getattr(self._robot, "reset_for_policy", None)
+        if not callable(reset):
+            return None
+        with self._lock:
+            return reset()
+
+    def reset_after_policy(self) -> dict[str, Any] | None:
+        """Run an optional robot-specific policy-end reset under the I/O lock."""
+        reset = getattr(self._robot, "reset_after_policy", None)
+        if not callable(reset):
+            return None
+        with self._lock:
+            return reset()
+
     # -- Read-only proxies (no lock needed) -----------------------------------
 
     @property

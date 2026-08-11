@@ -14,6 +14,7 @@
 
 """Rollout strategies — public API re-exports."""
 
+from .action_probe import ActionProbeStrategy
 from .base import BaseStrategy
 from .core import RolloutStrategy, estimate_max_episode_seconds, safe_push_to_hub, send_next_action
 from .dagger import DAggerEvents, DAggerPhase, DAggerStrategy
@@ -23,6 +24,7 @@ from .highlight import HighlightStrategy
 from .sentry import SentryStrategy
 
 __all__ = [
+    "ActionProbeStrategy",
     "BaseStrategy",
     "DAggerEvents",
     "DAggerPhase",

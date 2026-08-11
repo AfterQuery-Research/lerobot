@@ -1,0 +1,126 @@
+// Copyright 2026 The HuggingFace Inc. team. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package lerobot.remote_inference.v1;
+
+service RemotePolicyService {
+  rpc GetServerInfo(Empty) returns (ServerInfo);
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  rpc Infer(InferRequest) returns (ActionChunk);
+  rpc ResetSession(SessionRequest) returns (Empty);
+  rpc CloseSession(SessionRequest) returns (Empty);
+}
+
+message Empty {}
+
+enum ImageEncoding {
+  IMAGE_ENCODING_UNSPECIFIED = 0;
+  IMAGE_ENCODING_RAW_RGB = 1;
+  IMAGE_ENCODING_PNG = 2;
+  IMAGE_ENCODING_JPEG = 3;
+}
+
+message CameraSpec {
+  string key = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 channels = 4;
+  ImageEncoding encoding = 5;
+  string calibration_sha256 = 6;
+}
+
+message EmbodimentManifest {
+  uint32 protocol_version = 1;
+  string schema_id = 2;
+  string robot_id = 3;
+  string robot_type = 4;
+  double control_hz = 5;
+  repeated string state_features = 6;
+  repeated string action_features = 7;
+  repeated CameraSpec cameras = 8;
+  string manifest_sha256 = 9;
+}
+
+message ModelManifest {
+  string model_id = 1;
+  string revision = 2;
+  string policy_type = 3;
+  string norm_tag = 4;
+  uint32 action_horizon = 5;
+  uint32 action_dim = 6;
+  repeated string state_features = 7;
+  repeated string action_features = 8;
+  repeated string camera_keys = 9;
+  string fingerprint = 10;
+}
+
+message ServerInfo {
+  uint32 protocol_version = 1;
+  string service_name = 2;
+  bool ready = 3;
+  ModelManifest model = 4;
+}
+
+message OpenSessionRequest {
+  string client_instance_id = 1;
+  string requested_model_id = 2;
+  EmbodimentManifest embodiment = 3;
+  string task = 4;
+}
+
+message OpenSessionResponse {
+  string session_id = 1;
+  ModelManifest model = 2;
+  uint32 command_ttl_ms = 3;
+}
+
+message ImageFrame {
+  string key = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 channels = 4;
+  ImageEncoding encoding = 5;
+  bytes data = 6;
+  uint64 capture_monotonic_ns = 7;
+}
+
+message InferRequest {
+  string session_id = 1;
+  string episode_id = 2;
+  uint64 observation_sequence = 3;
+  uint64 capture_tick = 4;
+  uint64 capture_monotonic_ns = 5;
+  repeated float state = 6;
+  repeated ImageFrame images = 7;
+  string task = 8;
+  uint64 last_executed_tick = 9;
+  uint32 action_queue_depth = 10;
+}
+
+message ActionChunk {
+  string session_id = 1;
+  uint64 observation_sequence = 2;
+  uint64 first_action_tick = 3;
+  uint32 action_horizon = 4;
+  uint32 action_dim = 5;
+  repeated float actions = 6;
+  string model_fingerprint = 7;
+  uint64 server_compute_ns = 8;
+}
+
+message SessionRequest {
+  string session_id = 1;
+}

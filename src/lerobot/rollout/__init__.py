@@ -19,6 +19,7 @@ from lerobot.utils.import_utils import require_package
 require_package("datasets", extra="dataset")
 
 from .configs import (
+    ActionProbeStrategyConfig,
     BaseStrategyConfig,
     DAggerKeyboardConfig,
     DAggerPedalConfig,
@@ -41,6 +42,7 @@ from .context import (
 from .inference import (
     InferenceEngine,
     InferenceEngineConfig,
+    RemoteInferenceConfig,
     RTCInferenceConfig,
     RTCInferenceEngine,
     SyncInferenceConfig,
@@ -48,6 +50,7 @@ from .inference import (
     create_inference_engine,
 )
 from .strategies import (
+    ActionProbeStrategy,
     BaseStrategy,
     DAggerStrategy,
     EpisodicStrategy,
@@ -58,6 +61,8 @@ from .strategies import (
 )
 
 __all__ = [
+    "ActionProbeStrategy",
+    "ActionProbeStrategyConfig",
     "BaseStrategy",
     "BaseStrategyConfig",
     "DAggerKeyboardConfig",
@@ -76,6 +81,7 @@ __all__ = [
     "ProcessorContext",
     "RTCInferenceConfig",
     "RTCInferenceEngine",
+    "RemoteInferenceConfig",
     "RolloutConfig",
     "RolloutContext",
     "RolloutStrategy",

@@ -49,6 +49,27 @@ MAX_OPENCV_INDEX = 60
 logger = logging.getLogger(__name__)
 
 
+def _find_linux_stable_video_path(
+    device_path: str | Path,
+    by_path_dir: Path = Path("/dev/v4l/by-path"),
+) -> str | None:
+    """Return the physical-port alias for a Linux video node when available."""
+    if not by_path_dir.is_dir():
+        return None
+
+    resolved_device = Path(device_path).resolve()
+    aliases = [
+        alias for alias in by_path_dir.iterdir() if alias.is_symlink() and alias.resolve() == resolved_device
+    ]
+    if not aliases:
+        return None
+
+    # Some systems expose equivalent usb and usbv2 aliases. Prefer the shorter,
+    # conventional usb path so discovery output remains deterministic.
+    aliases.sort(key=lambda alias: ("-usbv" in alias.name, alias.name))
+    return str(aliases[0])
+
+
 class OpenCVCamera(Camera):
     """
     Manages camera interactions using OpenCV for efficient frame recording.
@@ -355,6 +376,10 @@ class OpenCVCamera(Camera):
                             "fps": default_fps,
                         },
                     }
+                    if platform.system() == "Linux":
+                        stable_path = _find_linux_stable_video_path(target)
+                        if stable_path is not None:
+                            camera_info["stable_path"] = stable_path
 
                     found_cameras_info.append(camera_info)
             finally:
