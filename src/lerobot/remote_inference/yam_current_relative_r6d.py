@@ -58,6 +58,13 @@ YAM_CURRENTREL_STATE_NAMES = UMI_CURRENTREL_STATE_NAMES
 YAM_CURRENTREL_ACTION_NAMES = UMI_CURRENTREL_ACTION_NAMES
 YAM_CURRENTREL_CAMERA_KEYS = ("umi1", "umi2")
 
+# The current-relative policy was trained in the UMI jaw-centre tool frame:
+# +X up, +Y right, +Z forward.  At the YAM zero pose, its jaw-centre TCP frame
+# is +X down, +Y right, +Z backward.  Coordinates therefore differ by a
+# 180-degree rotation about local Y.  Relative SE(3) motions must be conjugated
+# by this transform; translating XYZ alone would leave Rotation6D inconsistent.
+UMI_MODEL_TO_YAM_TCP = np.diag([-1.0, 1.0, -1.0, 1.0]).astype(np.float64)
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,18 +247,24 @@ class YamCurrentRelativeR6DAdapter:
     The policy state is ``inverse(T_current) @ T_previous``. Every action row is
     independently anchored to the same query pose as
     ``inverse(T_query) @ T_future``. Returned rows are therefore never integrated
-    recursively.
+    recursively. Policy-relative poses use the UMI tool axes, while FK/IK use the
+    YAM TCP axes; ``model_to_yam_tcp`` conjugates the full relative transform
+    between those frames in both directions.
     """
 
     left: ArmKinematics
     right: ArmKinematics
     flange_to_tcp: np.ndarray = field(default_factory=lambda: YAM_FLANGE_TO_FINGERTIP.copy())
+    model_to_yam_tcp: np.ndarray = field(default_factory=lambda: UMI_MODEL_TO_YAM_TCP.copy())
     gripper: GripperMap = field(default_factory=GripperMap)
     joint_limits: tuple[tuple[float, float], ...] = YAM_JOINT_LIMITS
 
     def __post_init__(self) -> None:
         self.flange_to_tcp = np.asarray(self.flange_to_tcp, dtype=np.float64)
         validate_rigid_transform(self.flange_to_tcp, name="flange_to_tcp")
+        self.model_to_yam_tcp = np.asarray(self.model_to_yam_tcp, dtype=np.float64)
+        validate_rigid_transform(self.model_to_yam_tcp, name="model_to_yam_tcp")
+        self._yam_tcp_to_model = invert_rigid_transform(self.model_to_yam_tcp)
         if len(self.joint_limits) != 6:
             raise ValueError("joint_limits must contain six lower/upper pairs")
 
@@ -265,6 +278,7 @@ class YamCurrentRelativeR6DAdapter:
         max_position_residual_m: float = 2e-3,
         max_orientation_residual_rad: float = np.deg2rad(1.0),
         flange_to_tcp: np.ndarray | None = None,
+        model_to_yam_tcp: np.ndarray | None = None,
         gripper: GripperMap | None = None,
     ) -> YamCurrentRelativeR6DAdapter:
         resolved = resolve_yam_urdf(urdf_path)
@@ -278,8 +292,19 @@ class YamCurrentRelativeR6DAdapter:
             left=YamArmKinematics(str(resolved), **kinematics_kwargs),
             right=YamArmKinematics(str(resolved), **kinematics_kwargs),
             flange_to_tcp=(YAM_FLANGE_TO_FINGERTIP.copy() if flange_to_tcp is None else flange_to_tcp),
+            model_to_yam_tcp=(UMI_MODEL_TO_YAM_TCP.copy() if model_to_yam_tcp is None else model_to_yam_tcp),
             gripper=gripper or GripperMap(),
         )
+
+    def _yam_relative_to_model(self, relative_pose: np.ndarray) -> np.ndarray:
+        """Express one YAM-TCP-relative pose in the policy's UMI tool frame."""
+
+        return self._yam_tcp_to_model @ relative_pose @ self.model_to_yam_tcp
+
+    def _model_relative_to_yam(self, relative_pose: np.ndarray) -> np.ndarray:
+        """Express one policy-relative pose in the YAM TCP frame."""
+
+        return self.model_to_yam_tcp @ relative_pose @ self._yam_tcp_to_model
 
     @staticmethod
     def _joints_from_observation(
@@ -318,11 +343,11 @@ class YamCurrentRelativeR6DAdapter:
 
         state = np.empty(UMI_CURRENTREL_STATE_DIM, dtype=np.float64)
         state[LEFT_STATE_SLICE.start : LEFT_STATE_SLICE.stop - 1] = encode_relative_pose(
-            relative_transform(left_tcp, previous_left_tcp)
+            self._yam_relative_to_model(relative_transform(left_tcp, previous_left_tcp))
         )
         state[LEFT_STATE_SLICE.stop - 1] = self.gripper.yam_to_umi(left_gripper, left=True)
         state[RIGHT_STATE_SLICE.start : RIGHT_STATE_SLICE.stop - 1] = encode_relative_pose(
-            relative_transform(right_tcp, previous_right_tcp)
+            self._yam_relative_to_model(relative_transform(right_tcp, previous_right_tcp))
         )
         state[RIGHT_STATE_SLICE.stop - 1] = self.gripper.yam_to_umi(right_gripper, left=False)
         if not np.isfinite(state).all():
@@ -366,7 +391,8 @@ class YamCurrentRelativeR6DAdapter:
                     zip(arm_slices, anchors, solvers, strict=True)
                 ):
                     arm_name = "left" if arm_index == 0 else "right"
-                    relative_tcp = decode_relative_pose(row[arm_slice.start : arm_slice.stop - 1])
+                    model_relative = decode_relative_pose(row[arm_slice.start : arm_slice.stop - 1])
+                    relative_tcp = self._model_relative_to_yam(model_relative)
                     target_tcp = anchor @ relative_tcp
                     target_flange = target_tcp @ flange_to_tcp_inverse
                     solution = np.asarray(solver.ik(target_flange, seeds[arm_index], check=True))
@@ -375,10 +401,11 @@ class YamCurrentRelativeR6DAdapter:
                     seeds[arm_index] = solution
                     solutions.append(solution)
             except IkResidualError as exc:
-                relative_xyz = np.array2string(relative_tcp[:3, 3], precision=5, separator=",")
+                model_xyz = np.array2string(model_relative[:3, 3], precision=5, separator=",")
+                yam_xyz = np.array2string(relative_tcp[:3, 3], precision=5, separator=",")
                 contextual_error = IkResidualError(
                     f"action row {row_index + 1}/{rows.shape[0]}, {arm_name} arm, "
-                    f"relative TCP translation {relative_xyz} m: {exc}"
+                    f"model translation {model_xyz} m, YAM TCP translation {yam_xyz} m: {exc}"
                 )
                 if row_index == 0:
                     raise contextual_error from exc
@@ -419,6 +446,7 @@ __all__ = [
     "YAM_CURRENTREL_CAMERA_KEYS",
     "YAM_CURRENTREL_SCHEMA_ID",
     "YAM_CURRENTREL_STATE_NAMES",
+    "UMI_MODEL_TO_YAM_TCP",
     "YamActionTransitionError",
     "YamJointProgressWatchdog",
     "YamCurrentRelativeQuery",

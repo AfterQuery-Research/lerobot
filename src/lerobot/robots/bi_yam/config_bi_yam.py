@@ -152,6 +152,7 @@ class BiYAMFollowerConfig(RobotConfig):
     left_joint_limits: list[tuple[float, float]] = field(default_factory=_default_joint_limits)
     right_joint_limits: list[tuple[float, float]] = field(default_factory=_default_joint_limits)
     gripper_limits: tuple[float, float] = (0.0, 1.0)
+    joint_state_tolerance: float = 0.02
     gripper_state_tolerance: float = 0.15
     max_joint_delta: float = 0.1
     max_gripper_delta: float = 0.03
@@ -210,8 +211,10 @@ class BiYAMFollowerConfig(RobotConfig):
                 raise ValueError(f"{name} must be positive")
         if not math.isfinite(self.command_lead_time_s) or self.command_lead_time_s < 0:
             raise ValueError("command_lead_time_s must be non-negative")
-        if not math.isfinite(self.gripper_state_tolerance) or self.gripper_state_tolerance < 0:
-            raise ValueError("gripper_state_tolerance must be non-negative")
+        for name in ("joint_state_tolerance", "gripper_state_tolerance"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
         if (
             not math.isfinite(self.control_telemetry_console_interval_s)
             or self.control_telemetry_console_interval_s < 0

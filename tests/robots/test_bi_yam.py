@@ -320,6 +320,7 @@ def test_generic_config_has_portable_tested_defaults_and_factory_support(tmp_pat
     assert config.policy_reset_fps == 30
     assert config.policy_reset_tolerance == 0.035
     assert config.policy_reset_timeout_s == 30
+    assert config.joint_state_tolerance == 0.02
     assert config.gripper_state_tolerance == 0.15
     assert config.cameras == {}
 
@@ -667,6 +668,80 @@ def test_gripper_stop_overtravel_is_accepted_and_clipped_in_observations(tmp_pat
     assert observation["left_gripper.pos"] == 1.0
     assert observation["right_gripper.pos"] == 0.0
     assert robot.is_armed
+    robot.disconnect()
+
+
+def test_policy_start_reset_recovers_gripper_outside_operational_limits(tmp_path):
+    target = (*([0.0] * 6), 0.95, *([0.0] * 6), 0.99)
+    config = make_config(
+        tmp_path,
+        policy_start_position=target,
+        policy_reset_fps=10_000,
+        policy_reset_tolerance=0.001,
+        policy_reset_timeout_s=0.5,
+    )
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    workers["left"].positions[6] = -0.43705
+
+    robot.arm()
+    reset_position = robot.reset_for_policy()
+
+    assert robot.is_armed
+    assert reset_position == dict(zip(YAM_SCALAR_KEYS, target, strict=True))
+    assert (*workers["left"].positions, *workers["right"].positions) == pytest.approx(target)
+    robot.disconnect()
+
+
+def test_arm_rejects_gripper_outside_limits_without_policy_start_reset(tmp_path):
+    config = make_config(tmp_path, policy_start_position=None)
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    workers["left"].positions[6] = -0.43705
+
+    with pytest.raises(RuntimeError, match=r"left_gripper.pos=-0.43705"):
+        robot.arm()
+
+    assert not robot.is_armed
+    robot.disconnect()
+
+
+def test_joint_limit_measurement_roundoff_is_accepted_when_arming(tmp_path):
+    joint_limits = [(0.0, 1.0)] * 6
+    config = make_config(
+        tmp_path,
+        left_joint_limits=joint_limits,
+        right_joint_limits=joint_limits,
+    )
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    workers["left"].positions[1] = -0.019
+    workers["right"].positions[2] = -0.019
+
+    robot.arm()
+
+    assert robot.is_armed
+    robot.disconnect()
+
+
+def test_joint_limit_measurement_beyond_tolerance_is_rejected_when_arming(tmp_path):
+    joint_limits = [(0.0, 1.0)] * 6
+    config = make_config(
+        tmp_path,
+        left_joint_limits=joint_limits,
+        right_joint_limits=joint_limits,
+    )
+    robot, workers = make_robot(tmp_path, config=config)
+    robot.connect()
+    workers["left"].positions[1] = -0.021
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"left_joint_1.pos=-0.02100 not in \[-0.02000, \+1.02000\]",
+    ):
+        robot.arm()
+
+    assert not robot.is_armed
     robot.disconnect()
 
 

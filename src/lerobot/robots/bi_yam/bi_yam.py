@@ -187,7 +187,17 @@ class BiYAMFollower(Robot):
         self._require_rollout_mode()
         self._require_connected()
         states = self._refresh_states(allow_fault=True)
-        self._validate_operational_state(states)
+        try:
+            self._validate_operational_state(states)
+        except RuntimeError as exc:
+            if self.config.policy_start_position is None:
+                raise
+            # A gripper can report beyond its normalized [0, 1] range while it is
+            # resting against a mechanical stop. Permit that one condition long
+            # enough to execute the configured startup reset; joint bounds and
+            # non-finite values remain hard failures.
+            self._validate_operational_state(states, allow_gripper_recovery=True)
+            logger.warning("%s; arming only to recover the gripper during the policy-start reset", exc)
         try:
             for side, worker in self._workers.items():
                 self._states[side] = worker.arm(self.config.command_ack_timeout_s)
@@ -282,7 +292,11 @@ class BiYAMFollower(Robot):
         if configured_target is None:
             return None
 
-        return self._reset_to_policy_position(configured_target, pose_name="policy start position")
+        return self._reset_to_policy_position(
+            configured_target,
+            pose_name="policy start position",
+            allow_gripper_recovery=True,
+        )
 
     def reset_after_policy(self) -> RobotAction:
         """Return to the fixed zero-joint, open-gripper pose after policy control."""
@@ -296,6 +310,7 @@ class BiYAMFollower(Robot):
         configured_target: tuple[float, ...],
         *,
         pose_name: str,
+        allow_gripper_recovery: bool = False,
     ) -> RobotAction:
         """Move both arms to a validated policy lifecycle pose."""
 
@@ -311,10 +326,18 @@ class BiYAMFollower(Robot):
         logger.info("Moving BiYAM to its %s", pose_name)
 
         try:
-            states = self._refresh_commandable_states()
+            states = self._refresh_commandable_states(
+                allow_gripper_recovery=allow_gripper_recovery,
+            )
             start = self._control_positions(states)
             max_error = float(np.max(np.abs(target - start)))
-            if max_error <= self.config.policy_reset_tolerance:
+            state_is_operational = True
+            if allow_gripper_recovery:
+                try:
+                    self._validate_operational_state(states)
+                except RuntimeError:
+                    state_is_operational = False
+            if max_error <= self.config.policy_reset_tolerance and state_is_operational:
                 logger.info("BiYAM is already at its %s (max error %.4f)", pose_name, max_error)
                 return target_action
 
@@ -325,7 +348,9 @@ class BiYAMFollower(Robot):
             logger.info("Executing policy reset trajectory (%d steps)", trajectory_steps)
             for waypoint in np.linspace(start, target, trajectory_steps + 1)[1:]:
                 loop_started_at = time.perf_counter()
-                states = self._refresh_commandable_states()
+                states = self._refresh_commandable_states(
+                    allow_gripper_recovery=allow_gripper_recovery,
+                )
                 present = self._control_positions(states)
                 max_error = float(np.max(np.abs(target - present)))
                 if time.monotonic() - started_at >= self.config.policy_reset_timeout_s:
@@ -348,10 +373,18 @@ class BiYAMFollower(Robot):
             # Keep the final absolute target active until measured state settles.
             while True:
                 loop_started_at = time.perf_counter()
-                states = self._refresh_commandable_states()
+                states = self._refresh_commandable_states(
+                    allow_gripper_recovery=allow_gripper_recovery,
+                )
                 present = self._control_positions(states)
                 max_error = float(np.max(np.abs(target - present)))
-                if max_error <= self.config.policy_reset_tolerance:
+                state_is_operational = True
+                if allow_gripper_recovery:
+                    try:
+                        self._validate_operational_state(states)
+                    except RuntimeError:
+                        state_is_operational = False
+                if max_error <= self.config.policy_reset_tolerance and state_is_operational:
                     logger.info("BiYAM reached its %s (max error %.4f)", pose_name, max_error)
                     return target_action
                 if time.monotonic() - started_at >= self.config.policy_reset_timeout_s:
@@ -632,13 +665,30 @@ class BiYAMFollower(Robot):
             raise
         return dict(self._states)
 
-    def _validate_operational_state(self, states: dict[str, ArmState]) -> None:
+    def _validate_operational_state(
+        self,
+        states: dict[str, ArmState],
+        *,
+        allow_gripper_recovery: bool = False,
+    ) -> None:
         positions = np.asarray((*states["left"].positions, *states["right"].positions), dtype=np.float64)
         lower, upper = self._operational_bounds()
+        joint_indices = np.asarray([*range(6), *range(7, 13)])
+        lower[joint_indices] -= self.config.joint_state_tolerance
+        upper[joint_indices] += self.config.joint_state_tolerance
         lower[[6, 13]] -= self.config.gripper_state_tolerance
         upper[[6, 13]] += self.config.gripper_state_tolerance
-        if not np.isfinite(positions).all() or np.any(positions < lower) or np.any(positions > upper):
-            raise RuntimeError("Cannot arm while measured state is outside operational limits")
+        outside_mask = ~np.isfinite(positions) | (positions < lower) | (positions > upper)
+        if allow_gripper_recovery:
+            outside_mask[[6, 13]] = ~np.isfinite(positions[[6, 13]])
+        outside = np.flatnonzero(outside_mask)
+        if outside.size:
+            details = ", ".join(
+                f"{YAM_SCALAR_KEYS[index]}={positions[index]:+.5f} not in "
+                f"[{lower[index]:+.5f}, {upper[index]:+.5f}]"
+                for index in outside
+            )
+            raise RuntimeError("Cannot arm while measured state is outside operational limits: " + details)
 
     def _control_positions(self, states: dict[str, ArmState]) -> np.ndarray:
         positions = np.asarray((*states["left"].positions, *states["right"].positions), dtype=np.float64)
@@ -646,13 +696,20 @@ class BiYAMFollower(Robot):
         positions[[6, 13]] = np.clip(positions[[6, 13]], gripper_lower, gripper_upper)
         return positions
 
-    def _refresh_commandable_states(self) -> dict[str, ArmState]:
+    def _refresh_commandable_states(
+        self,
+        *,
+        allow_gripper_recovery: bool = False,
+    ) -> dict[str, ArmState]:
         states = self._refresh_states()
         if not all(state.armed for state in states.values()):
             self._safe_idle_workers()
             raise RuntimeError("An arm worker left the armed state")
         try:
-            self._validate_operational_state(states)
+            self._validate_operational_state(
+                states,
+                allow_gripper_recovery=allow_gripper_recovery,
+            )
         except Exception:
             self._safe_idle_workers()
             raise

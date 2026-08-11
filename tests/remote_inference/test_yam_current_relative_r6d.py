@@ -21,6 +21,7 @@ from lerobot.remote_inference.backend import (
 from lerobot.remote_inference.schema import ImageEncoding, PolicyActionChunk
 from lerobot.remote_inference.server import RemotePolicyServerConfig, create_grpc_server
 from lerobot.remote_inference.yam_current_relative_r6d import (
+    UMI_MODEL_TO_YAM_TCP,
     YamActionTransitionError,
     YamCurrentRelativeR6DAdapter,
     YamJointProgressWatchdog,
@@ -121,13 +122,13 @@ def test_query_state_uses_inverse_current_times_previous():
 
     assert query.state.shape == (20,)
     assert query.state.dtype == np.float32
-    assert np.allclose(query.state[:3], [-0.01, -0.02, -0.03])
+    assert np.allclose(query.state[:3], [0.01, -0.02, 0.03])
     assert np.allclose(query.state[3:9], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-    assert np.allclose(query.state[10:13], [-0.02, -0.03, -0.04])
+    assert np.allclose(query.state[10:13], [0.02, -0.03, 0.04])
     assert np.allclose(query.state[13:19], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
 
 
-def test_action_rows_are_each_composed_from_the_same_query_anchor():
+def test_action_rows_are_reframed_and_composed_from_the_same_query_anchor():
     adapter = _adapter()
     query = adapter.build_query(_observation(), None)
     first = _identity_action_row()
@@ -139,10 +140,36 @@ def test_action_rows_are_each_composed_from_the_same_query_anchor():
 
     decoded = adapter.decode_action_chunk(np.stack((first, second)), query)
 
-    assert np.allclose(decoded.actions[0, :3], [0.11, 0.52, 0.83])
-    assert np.allclose(decoded.actions[1, :3], [0.12, 0.54, 0.86])
-    assert np.allclose(decoded.actions[1, 7:10], [0.18, 0.62, 0.94])
+    assert np.allclose(decoded.actions[0, :3], [0.09, 0.52, 0.77])
+    assert np.allclose(decoded.actions[1, :3], [0.08, 0.54, 0.74])
+    assert np.allclose(decoded.actions[1, 7:10], [0.22, 0.62, 0.86])
     assert np.allclose(decoded.position_residual_m, 0.0)
+
+
+def test_model_to_yam_mapping_is_a_half_turn_about_local_y():
+    assert np.allclose(UMI_MODEL_TO_YAM_TCP[:3, :3], np.diag([-1.0, 1.0, -1.0]))
+    assert np.linalg.det(UMI_MODEL_TO_YAM_TCP[:3, :3]) == pytest.approx(1.0)
+
+    adapter = _adapter()
+    model_relative = np.eye(4)
+    model_relative[:3, :3] = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+        ]
+    )
+    model_relative[:3, 3] = [0.01, 0.02, 0.03]
+
+    yam_relative = adapter._model_relative_to_yam(model_relative)
+    round_trip = adapter._yam_relative_to_model(yam_relative)
+
+    assert np.allclose(yam_relative[:3, 3], [-0.01, 0.02, -0.03])
+    assert np.allclose(
+        yam_relative[:3, :3],
+        UMI_MODEL_TO_YAM_TCP[:3, :3] @ model_relative[:3, :3] @ UMI_MODEL_TO_YAM_TCP[:3, :3].T,
+    )
+    assert np.allclose(round_trip, model_relative)
 
 
 def test_ik_failure_identifies_action_row_arm_and_relative_target():
@@ -158,7 +185,10 @@ def test_ik_failure_identifies_action_row_arm_and_relative_target():
 
     with pytest.raises(
         IkResidualError,
-        match=r"action row 1/1, left arm, relative TCP translation \[ 0.01,-0.02, 0.03\] m",
+        match=(
+            r"action row 1/1, left arm, model translation \[ 0.01,-0.02, 0.03\] m, "
+            r"YAM TCP translation \[-0.01,-0.02,-0.03\] m"
+        ),
     ):
         adapter.decode_action_chunk(row[None, :], query)
 
@@ -428,7 +458,7 @@ def test_specialized_engine_latency_aligns_model_rows_before_rate_limiting():
     assert adapter.decode_right_seeds[0][3] == pytest.approx(-0.4)
     assert executable.shape == (19, 14)
     assert engine._commit_length_for_actions(len(executable)) == 15
-    assert executable[-1, 0] == pytest.approx(0.3)
+    assert executable[-1, 0] == pytest.approx(-0.3)
     assert executable[-1, 3] == pytest.approx(0.7)
     dispatch_steps = np.diff(np.vstack((engine._last_dispatched_action, executable)), axis=0)
     assert np.abs(dispatch_steps[:, [*range(6), *range(7, 13)]]).max() <= 0.02 + 1e-7
