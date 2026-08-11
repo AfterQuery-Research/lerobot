@@ -14,7 +14,7 @@ final_name="$(basename -- "${UMI_YAM_ONSET_V3_ROOT}")"
 mkdir -p "${final_parent}"
 
 case "${report_path}" in
-  "${UMI_YAM_ONSET_V3_ROOT}"/*)
+  "${UMI_YAM_ONSET_V3_ROOT}" | "${UMI_YAM_ONSET_V3_ROOT}"/*)
     echo "Validation report must be outside the read-only artifact root" >&2
     exit 2
     ;;

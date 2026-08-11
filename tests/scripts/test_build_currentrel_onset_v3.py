@@ -93,3 +93,29 @@ else:
     for path in (final_root, *final_root.rglob("*")):
         assert stat.S_IMODE(path.stat().st_mode) & 0o222 == 0
     assert not list(tmp_path.glob(f".{final_root.name}.build.*"))
+
+
+def test_builder_rejects_report_equal_to_artifact_root_before_build(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    final_root = tmp_path / "dual-lidar-umi-currentrel-r6d-onset-v3"
+    env = {
+        **os.environ,
+        "UMI_YAM_SOURCE_ROOT": str(tmp_path / "unused-source"),
+        "UMI_YAM_ONSET_V2_ROOT": str(tmp_path / "unused-v2"),
+        "UMI_YAM_ONSET_V3_ROOT": str(final_root),
+        "UMI_YAM_ONSET_V3_REPORT": str(final_root),
+        "UMI_YAM_PYTHON": sys.executable,
+    }
+
+    result = subprocess.run(
+        [str(repo_root / "examples/umi_yam/build_currentrel_onset_v3.sh")],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "Validation report must be outside" in result.stderr
+    assert not final_root.exists()
