@@ -21,8 +21,9 @@ Supported allocations preserve the same global batch and optimizer-step contract
 | `protected1x4` | 1 node × 4 GPUs | 16 | `kempner_rtx` |
 
 The Slurm request and `UMI_YAM_TOPOLOGY` must agree; the launcher verifies both before touching model
-state. Keep the same topology when resuming because checkpoint validation pins world size and per-rank
-batch. Use `protected1x4` only when the protected four-GPU allocation has been explicitly coordinated.
+state. Exact resume is the default: checkpoint validation pins world size and per-rank batch. The sole
+cross-topology exception is the explicit `16×4 -> 8×8` recovery described below. Use `protected1x4`
+only when the protected four-GPU allocation has been explicitly coordinated.
 
 Model pins are MolmoAct2 `8dcbed66f2380e4393189c303ea72488eb9e63c2`, FAST tokenizer
 `d45593b4c863d0bc1ca064f8b352fa16b75c38e8`, and Pi0.5
@@ -183,6 +184,27 @@ the first checkpoint it preserves partial output as `.precheckpoint-rN` and rest
 export UMI_YAM_RESUME_CONFIG="$UMI_YAM_RUN_ROOT/$UMI_YAM_RUN_ID/$UMI_YAM_PROFILE/checkpoints/004000/pretrained_model/train_config.json"
 sbatch --export=ALL examples/umi_yam/train_four_models.sbatch
 ```
+
+If a `2x8` or `4x4` preemptible job has stopped and its latest complete checkpoint records world size
+16 and batch 4/rank, the authorized fallback is 2 nodes × 4 GPUs. This preserves global batch 64 and
+uses the saved `(16, 4)` tuple to recover the sampler offset, while the final launcher CLI argument
+overrides the resumed config to batch 8/rank. It restores the model, optimizer, scheduler, and RNG
+checkpoint, but it is **not bit-exact** to uninterrupted world-16 training: rank sharding and stochastic
+operations change after the world-size transition. Do not run the source and fallback jobs concurrently.
+
+```bash
+export UMI_YAM_RESUME_CONFIG="$UMI_YAM_RUN_ROOT/$UMI_YAM_RUN_ID/$UMI_YAM_PROFILE/checkpoints/004000/pretrained_model/train_config.json"
+sbatch --partition=kempner_requeue --account=kempner_ydu_lab --qos=normal \
+  --nodes=2 --ntasks-per-node=1 \
+  --gres=gpu:nvidia_rtx_pro_6000_blackwell_server_edition:4 \
+  --cpus-per-task=64 --mem=500G --time=12:00:00 --requeue \
+  --export=ALL,UMI_YAM_TOPOLOGY=2x4,UMI_YAM_ALLOW_CROSS_TOPOLOGY_RESUME=1 \
+  examples/umi_yam/train_four_models.sbatch
+```
+
+The opt-in is rejected on a fresh launch and permits only `(world_size, batch/rank)=(16,4) -> (8,8)`.
+All other topology changes fail closed. Once the fallback writes an `(8,8)` checkpoint, ordinary exact
+2x4 resumes work without the opt-in even though earlier `(16,4)` checkpoints remain in the directory.
 
 Never point two jobs at the same profile output directory. Except for the explicitly coordinated
 `protected1x4` mode, use `kempner_requeue`. Do not use `kempner`, `kempner_h100`, or `kempner_h200`;
