@@ -66,6 +66,57 @@ All four rows above are exact 12,000-step artifacts. Each immutable revision
 passed a clean-cache policy-server load and gRPC inference check before being
 listed here.
 
+### Recommended settings
+
+The checkpoint predicts a 24-row action chunk, but the robot should initially
+execute only its first row and then query again from newly measured state. Keep
+the following values together; `chunk_size=24` and `execution_horizon=1` serve
+different purposes.
+
+| Setting | Recommended value |
+|---|---|
+| Prediction/action chunk | `policy.chunk_size=24`, `policy.n_action_steps=24` (0.8 seconds at 30 FPS) |
+| Initial hardware execution | `--inference.execution_horizon=1`; re-query after every executed row |
+| EE20 client mode | `--inference.bi_yam_action_mode=ee`; decode relative EE rows and run independent I2RT IK per arm |
+| Joint14 client mode | `--inference.bi_yam_action_mode=joint`; validate absolute 14-D rows and do not run online IK |
+| Cameras | `umi1` = left, then `umi2` = right; 800x600, 30 FPS, MJPG |
+| Task | `pick up oranges and place them in the bowl` (exact case and wording) |
+| Motion bounds | `--robot.max_joint_delta=0.10`, `--robot.max_gripper_delta=0.03` |
+| First live check | Ten-second no-motion `action_probe`; review every rejected or bounded row before arming |
+
+Do not raise the execution horizon to 24 merely because the checkpoint predicts
+24 rows. Later rows share the original query anchor and were not validated as
+safe open-loop commands.
+
+### Reference fine-tuning recipe
+
+These are the settings used for the four released artifacts, recorded here so
+a software or hardware team can reproduce the policy contract without adding
+cluster launch files to this repository:
+
+- 12,000 optimizer updates, global batch 64 (the canonical runs used 16
+  processes x 4 samples), seed 1000, eight loader workers per process, 600
+  warmup steps, cosine decay through step 12,000, and checkpoints every 1,000
+  steps. All 182 episodes train; there is no validation split.
+- Both wrist views use fixed-order brightness, contrast, and saturation jitter,
+  each sampled from `[0.8, 1.2]`. The task, camera order, 30-FPS timing, and
+  24-row horizon are the same as deployment.
+- EE20 uses
+  `brandonyang/dual-lidar-combined-filtered-long-gripper@a29ae6a5531584fb950c7bb3bb5895f18421b108`
+  and builds query-relative targets for `k=1..24`. Joint14 uses
+  `brandonyang/dual-lidar-combined-filtered-joint-positions-long-gripper@387d696eb36de411a11c8b2612a6f19822ca3a53`,
+  shifts each action to the next measured joint target, and excludes the last
+  24 query rows of every episode.
+
+| Policy family | Initialization and precision | Action/training settings | Optimizer schedule |
+|---|---|---|---|
+| MolmoAct2 | `allenai/MolmoAct2-BimanualYAM@8dcbed66f2380e4393189c303ea72488eb9e63c2`; bfloat16 model; gradient checkpointing; VLM LoRA rank 64, alpha 16, dropout 0.05 | `action_mode=both`, `inference_action_mode=continuous`, `normalize_gripper=false`, 8 flow timesteps | AdamW; main LR `1e-5`, vision/connector `5e-6`, action expert `1e-4`; betas `(0.9, 0.95)`, epsilon `1e-6`, no weight decay, gradient norm 1; final LR `1e-6` |
+| Pi0.5 | `lerobot/pi05_base@b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba`; float32 with no AMP; gradient checkpointing; compile disabled | `use_relative_actions=false`; 10 inference denoising steps | AdamW LR `2.5e-5`; betas `(0.9, 0.95)`, epsilon `1e-8`, weight decay `0.01`, gradient norm 1; final LR `2.5e-6` |
+
+The immutable model repositories also contain each resolved `train_config.json`.
+Treat those files as the exact provenance record if a future default differs
+from the compact recipe above.
+
 ### EE20 actions
 
 At query time `t`, the robot reads both measured six-joint vectors. I2RT FK at
@@ -106,11 +157,30 @@ fail-closed before dispatch; three additional gripper steps require rate
 limiting. This replay is not held-out or physical-hardware validation. Run the
 no-motion probe below and inspect rejected or bounded actions before arming.
 
+More precisely, the replay chose 32 episode IDs evenly across `0..181` and the
+midpoint of each episode's valid 24-row query range. Every query contained only
+the current measured state, the exact task text, and the synchronized current
+`umi1`/`umi2` RGB frames; no future image or demonstrated action was given to
+the policy. Each model predicted all 24 rows in one inference call, and the
+recorded action was loaded only afterward to score the output. This is not
+teacher forcing, but it is also not a closed-loop rollout: these frames came
+from the training set and may have been seen during optimization.
+
+MolmoAct2 receives the two 800x600 frames under their native `umi1`, `umi2`
+keys and its saved image processor handles model-specific preprocessing.
+Pi0.5 renames them to `left_wrist_0_rgb`, `right_wrist_0_rgb`, inserts a masked
+empty base-camera slot, resizes with padding to 224x224, and maps image values
+from `[0, 1]` to `[-1, 1]`. No training-time color jitter is applied in replay.
+
 MolmoAct2 trains its continuous action head and discrete-action auxiliary
 objective together (`action_mode=both`), but hardware inference uses only its
-continuous 24-row output. Pi0.5 also emits continuous rows; its componentwise
-relative-action option is disabled because EE20 is already SE(3)-relative and
-Joint14 is intentionally absolute.
+continuous 24-row output. Its discrete auxiliary uses teacher-forced action
+tokens during training only. Pi0.5 also emits continuous rows and does not use
+that discrete-token objective. Both continuous heads are supervised by the
+recorded 24-row action chunk during training; neither receives a demonstrated
+action at evaluation or deployment. Pi0.5's componentwise relative-action
+option is disabled because EE20 is already SE(3)-relative and Joint14 is
+intentionally absolute.
 
 ## Start the server
 
