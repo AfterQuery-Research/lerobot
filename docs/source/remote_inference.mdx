@@ -147,40 +147,11 @@ Inference performs no FK-to-IK conversion: it validates the predicted absolute
 row and passes it to the BiYAM driver, which still applies its configured
 per-tick rate limits.
 
-An offline training-set replay sampled 32 evenly spaced episode midpoints. Both
-EE20 models passed the row-one I2RT joint-motion gate on all 64 arm queries.
-MolmoAct2 Joint14 required the configured driver rate limiter on four samples,
-including two large right-arm steps. Pi0.5 Joint14 had no row-one joint-step
-violation, but six samples crossed an exact static bound (five tiny gripper
-overshoots and one `-0.0116`-rad joint-limit crossing) and are rejected
-fail-closed before dispatch; three additional gripper steps require rate
-limiting. This replay is not held-out or physical-hardware validation. Run the
-no-motion probe below and inspect rejected or bounded actions before arming.
-
-More precisely, the replay chose 32 episode IDs evenly across `0..181` and the
-midpoint of each episode's valid 24-row query range. Every query contained only
-the current measured state, the exact task text, and the synchronized current
-`umi1`/`umi2` RGB frames; no future image or demonstrated action was given to
-the policy. Each model predicted all 24 rows in one inference call, and the
-recorded action was loaded only afterward to score the output. This is not
-teacher forcing, but it is also not a closed-loop rollout: these frames came
-from the training set and may have been seen during optimization.
-
-MolmoAct2 receives the two 800x600 frames under their native `umi1`, `umi2`
-keys and its saved image processor handles model-specific preprocessing.
-Pi0.5 renames them to `left_wrist_0_rgb`, `right_wrist_0_rgb`, inserts a masked
-empty base-camera slot, resizes with padding to 224x224, and maps image values
-from `[0, 1]` to `[-1, 1]`. No training-time color jitter is applied in replay.
-
 MolmoAct2 trains its continuous action head and discrete-action auxiliary
 objective together (`action_mode=both`), but hardware inference uses only its
-continuous 24-row output. Its discrete auxiliary uses teacher-forced action
-tokens during training only. Pi0.5 also emits continuous rows and does not use
-that discrete-token objective. Both continuous heads are supervised by the
-recorded 24-row action chunk during training; neither receives a demonstrated
-action at evaluation or deployment. Pi0.5's componentwise relative-action
-option is disabled because EE20 is already SE(3)-relative and Joint14 is
-intentionally absolute.
+continuous 24-row output. Pi0.5 also emits continuous rows; its componentwise
+relative-action option is disabled because EE20 is already SE(3)-relative and
+Joint14 is intentionally absolute.
 
 ## Start the server
 
