@@ -193,16 +193,16 @@ fi
 
 if [[ -z $RESUME_CONFIG ]]; then
   if [[ $MODEL == molmoact2 ]]; then
-    MOLMO_TOKENIZER_SNAPSHOT=$(MOLMO_TOKENIZER_REPO="$MOLMO_TOKENIZER_REPO" \
-      MOLMO_TOKENIZER_REVISION="$MOLMO_TOKENIZER_REVISION" "$VENV/bin/python" - <<'PY'
+    MOLMO_TOKENIZER_SNAPSHOT=$(UMI_RESOLVE_REPO="$MOLMO_TOKENIZER_REPO" \
+      UMI_RESOLVE_REVISION="$MOLMO_TOKENIZER_REVISION" "$VENV/bin/python" - <<'PY'
 import json
 import os
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-repo = os.environ["MOLMO_TOKENIZER_REPO"]
-revision = os.environ["MOLMO_TOKENIZER_REVISION"]
+repo = os.environ["UMI_RESOLVE_REPO"]
+revision = os.environ["UMI_RESOLVE_REVISION"]
 snapshot = Path(snapshot_download(repo, revision=revision)).resolve()
 assert snapshot.name == revision and snapshot.parent.name == "snapshots"
 assert snapshot.parent.parent.name == "models--allenai--MolmoAct2-FAST-Tokenizer"
@@ -253,15 +253,16 @@ PY
       --policy.push_to_hub=false
     )
   else
-    PI05_SNAPSHOT=$(PI05_REPO="$PI05_REPO" PI05_REVISION="$PI05_REVISION" "$VENV/bin/python" - <<'PY'
+    PI05_SNAPSHOT=$(UMI_RESOLVE_REPO="$PI05_REPO" UMI_RESOLVE_REVISION="$PI05_REVISION" \
+      "$VENV/bin/python" - <<'PY'
 import json
 import os
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-repo = os.environ["PI05_REPO"]
-revision = os.environ["PI05_REVISION"]
+repo = os.environ["UMI_RESOLVE_REPO"]
+revision = os.environ["UMI_RESOLVE_REVISION"]
 snapshot = Path(snapshot_download(repo, revision=revision)).resolve()
 assert snapshot.name == revision and snapshot.parent.name == "snapshots"
 assert snapshot.parent.parent.name == "models--lerobot--pi05_base"
