@@ -59,7 +59,12 @@ from lerobot.utils.constants import (
 )
 from lerobot.utils.import_utils import _scipy_available, _transformers_available, require_package
 
-from .configuration_molmoact2 import MolmoAct2Config
+from .configuration_molmoact2 import (
+    DEFAULT_DISCRETE_ACTION_TOKENIZER,
+    DEFAULT_DISCRETE_ACTION_TOKENIZER_REVISION,
+    MolmoAct2Config,
+    _legacy_fast_tokenizer_snapshot_revision,
+)
 from .modeling_molmoact2 import _hf_token, _resolve_checkpoint_location
 
 logger = logging.getLogger(__name__)
@@ -702,7 +707,9 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
     checkpoint_revision: str | None = None
     checkpoint_force_download: bool = False
     action_mode: str = "both"
-    discrete_action_tokenizer: str = "allenai/MolmoAct2-FAST-Tokenizer"
+    discrete_action_tokenizer: str = DEFAULT_DISCRETE_ACTION_TOKENIZER
+    discrete_action_tokenizer_revision: str | None = DEFAULT_DISCRETE_ACTION_TOKENIZER_REVISION
+    discrete_action_tokenizer_load_path: str | None = None
     image_keys: list[str] = field(default_factory=list)
     allow_image_key_fallback: bool = False
     setup_type: str = ""
@@ -719,6 +726,14 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
     def __post_init__(self) -> None:
         require_package("transformers", extra="molmoact2")
 
+        legacy_revision = _legacy_fast_tokenizer_snapshot_revision(self.discrete_action_tokenizer)
+        if legacy_revision is not None:
+            legacy_path = self.discrete_action_tokenizer
+            self.discrete_action_tokenizer = DEFAULT_DISCRETE_ACTION_TOKENIZER
+            self.discrete_action_tokenizer_revision = legacy_revision
+            if self.discrete_action_tokenizer_load_path is None and Path(legacy_path).is_dir():
+                self.discrete_action_tokenizer_load_path = legacy_path
+
         checkpoint_location = _resolve_checkpoint_location(
             self.checkpoint_path,
             revision=self.checkpoint_revision,
@@ -730,8 +745,15 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
             require_package("scipy", extra="molmoact2")
             if UniversalActionProcessor is None:
                 raise RuntimeError("transformers and scipy are required to load MolmoAct2 action tokenizer.")
+            tokenizer_source = self.discrete_action_tokenizer_load_path or self.discrete_action_tokenizer
+            tokenizer_revision = (
+                None
+                if self.discrete_action_tokenizer_load_path is not None
+                else self.discrete_action_tokenizer_revision
+            )
             self.action_processor = UniversalActionProcessor.from_pretrained_local(
-                self.discrete_action_tokenizer,
+                tokenizer_source,
+                revision=tokenizer_revision,
             )
         self._action_start_id = _single_token_id(self.processor.tokenizer, ACTION_START_TOKEN)
         self._action_end_id = _single_token_id(self.processor.tokenizer, ACTION_END_TOKEN)
@@ -745,6 +767,7 @@ class MolmoAct2PackInputsProcessorStep(ProcessorStep):
             "checkpoint_force_download": self.checkpoint_force_download,
             "action_mode": self.action_mode,
             "discrete_action_tokenizer": self.discrete_action_tokenizer,
+            "discrete_action_tokenizer_revision": self.discrete_action_tokenizer_revision,
             "image_keys": list(self.image_keys),
             "allow_image_key_fallback": self.allow_image_key_fallback,
             "setup_type": self.setup_type,
@@ -1160,6 +1183,8 @@ def make_molmoact2_pre_post_processors(
             checkpoint_force_download=config.checkpoint_force_download,
             action_mode=config.action_mode,
             discrete_action_tokenizer=config.discrete_action_tokenizer,
+            discrete_action_tokenizer_revision=config.discrete_action_tokenizer_revision,
+            discrete_action_tokenizer_load_path=config.discrete_action_tokenizer_load_path,
             image_keys=image_keys,
             allow_image_key_fallback=not bool(config.image_keys),
             setup_type=setup_type,

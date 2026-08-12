@@ -23,15 +23,12 @@ from .config_bi_yam import (
     YAMArmConfig,
     YAMGripperCalibration,
 )
-from .sim_bi_yam import BiYAMSimulatorRobot, BiYAMSimulatorRobotConfig
 
 __all__ = [
     "BI_YAM_POLICY_END_POSITION",
     "BI_YAM_POLICY_START_POSITION",
     "BiYAMFollower",
     "BiYAMFollowerConfig",
-    "BiYAMSimulatorRobot",
-    "BiYAMSimulatorRobotConfig",
     "YAMArmConfig",
     "YAMGripperCalibration",
     "YAM_SCALAR_KEYS",

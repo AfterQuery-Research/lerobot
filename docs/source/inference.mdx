@@ -246,19 +246,9 @@ runs on the robot computer. The client sends typed observations and asynchronous
 queues returned action chunks. Do not pass `--policy.path` to the client; select the
 checkpoint when starting `lerobot-policy-server`.
 
-```bash
-lerobot-rollout \
-    --strategy.type=base \
-    --inference.type=remote \
-    --inference.server_address=policy-host:8081 \
-    --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --robot.type=bi_yam_simulator \
-    --task="Pick up the cube" \
-    --duration=60
-```
-
 See [Remote Policy Inference](./remote_inference) for server setup, dual-YAM
-hardware configuration, and simulator testing.
+hardware configuration, the mandatory no-motion action probe, and the complete
+rollout command.
 
 ---
 

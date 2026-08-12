@@ -367,12 +367,12 @@ def test_molmoact2_explicit_image_keys_stay_strict():
         step._resolve_image_keys(observation)
 
 
-def test_train_mode_vlm_lora_builds_policy_local_peft_config():
+def test_enable_lora_vlm_builds_policy_local_peft_config():
     pytest.importorskip("peft")
     policy_cfg = MolmoAct2Config(
         checkpoint_path="/tmp/not-a-real-checkpoint",
         device="cpu",
-        train_mode_vlm="lora",
+        enable_lora_vlm=True,
         lora_rank=64,
         push_to_hub=False,
     )
@@ -411,7 +411,7 @@ def test_cuda_graph_managers_are_inference_only():
 
     policy = object.__new__(MolmoAct2Policy)
     torch.nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(train_mode_vlm="fft", enable_inference_cuda_graph=True)
+    policy.config = SimpleNamespace(train_action_expert_only=False, enable_inference_cuda_graph=True)
     policy.model = DummyModel()
 
     policy.train()
@@ -428,7 +428,7 @@ def test_cuda_graph_managers_are_inference_only():
     assert policy.model.depth_decode_cuda_graph_manager.enabled is False
 
 
-def test_lora_targets_exclude_action_expert():
+def test_lora_action_expert_target_is_opt_in():
     policy = object.__new__(MolmoAct2Policy)
     torch.nn.Module.__init__(policy)
     policy.config = SimpleNamespace(
@@ -436,18 +436,24 @@ def test_lora_targets_exclude_action_expert():
         lora_alpha=16,
         lora_dropout=0.05,
         lora_bias="none",
+        enable_lora_action_expert=False,
     )
 
     targets = policy._get_default_peft_targets()["target_modules"]
 
     assert "transformer|vision_backbone" in targets
     assert "action_expert" not in targets
+
+    policy.config.enable_lora_action_expert = True
+    targets = policy._get_default_peft_targets()["target_modules"]
+
+    assert "action_expert" in targets
     assert "state_encoder" not in targets
     assert "state_norm" not in targets
     assert "kv_proj" not in targets
 
 
-def test_train_mode_vlm_lora_wraps_loaded_hf_model_locally():
+def test_enable_lora_vlm_wraps_loaded_hf_model_locally():
     pytest.importorskip("peft")
 
     class DummyInnerModel(torch.nn.Module):
@@ -475,7 +481,8 @@ def test_train_mode_vlm_lora_wraps_loaded_hf_model_locally():
         lora_alpha=4,
         lora_dropout=0.0,
         lora_bias="none",
-        train_mode_vlm="lora",
+        enable_lora_action_expert=False,
+        train_action_expert_only=False,
         enable_inference_cuda_graph=False,
     )
     policy.model = DummyHFModel()
@@ -517,45 +524,15 @@ def test_lora_vlm_unfreezes_action_expert_base_weights():
     assert all("action_expert" in name for name in trainable)
 
 
-def test_train_mode_vlm_freeze_requires_continuous_action_mode():
+def test_train_action_expert_only_requires_continuous_action_mode():
     with pytest.raises(ValueError, match="requires action_mode='continuous'"):
-        MolmoAct2Config(action_mode="both", train_mode_vlm="freeze")
+        MolmoAct2Config(action_mode="both", train_action_expert_only=True)
 
-    cfg = MolmoAct2Config(action_mode="continuous", train_mode_vlm="freeze")
-    assert cfg.train_mode_vlm == "freeze"
+    with pytest.raises(ValueError, match="incompatible with enable_lora_vlm"):
+        MolmoAct2Config(action_mode="continuous", train_action_expert_only=True, enable_lora_vlm=True)
 
-
-def test_train_mode_vlm_rejects_unknown_value():
-    with pytest.raises(ValueError, match="Unsupported train_mode_vlm"):
-        MolmoAct2Config(train_mode_vlm="frozen")
-
-
-@pytest.mark.parametrize(
-    ("legacy_kwargs", "expected_mode"),
-    [
-        ({"enable_lora_vlm": True}, "lora"),
-        ({"enable_lora_vlm": False}, "fft"),
-        ({"train_action_expert_only": True, "action_mode": "continuous"}, "freeze"),
-    ],
-)
-def test_legacy_vlm_training_fields_map_to_train_mode(legacy_kwargs, expected_mode):
-    cfg = MolmoAct2Config(**legacy_kwargs)
-    assert cfg.train_mode_vlm == expected_mode
-
-
-def test_null_legacy_vlm_training_fields_do_not_override_train_mode():
-    cfg = MolmoAct2Config(
-        train_mode_vlm="lora",
-        enable_lora_vlm=None,
-        enable_lora_action_expert=None,
-        train_action_expert_only=None,
-    )
-    assert cfg.train_mode_vlm == "lora"
-
-
-def test_conflicting_legacy_vlm_training_fields_are_rejected():
-    with pytest.raises(ValueError, match="Conflicting MolmoAct2 VLM training modes"):
-        MolmoAct2Config(train_mode_vlm="fft", enable_lora_vlm=True)
+    cfg = MolmoAct2Config(action_mode="continuous", train_action_expert_only=True)
+    assert cfg.train_action_expert_only
 
 
 def test_molmoact2_sequence_length_is_inferred_from_fixed_token_budget():
@@ -579,7 +556,7 @@ def test_molmoact2_sequence_length_is_inferred_from_fixed_token_budget():
     )
 
 
-def test_train_mode_vlm_freeze_freezes_non_action_expert_params():
+def test_train_action_expert_only_freezes_non_action_expert_params():
     class DummyBackbone(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -598,10 +575,10 @@ def test_train_mode_vlm_freeze_freezes_non_action_expert_params():
 
     policy = object.__new__(MolmoAct2Policy)
     torch.nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(train_mode_vlm="freeze")
+    policy.config = SimpleNamespace(train_action_expert_only=True)
     policy.model = DummyModel()
 
-    policy._freeze_vlm_parameters()
+    policy._freeze_non_action_expert_parameters()
     policy.train()
 
     assert policy.model.model.action_expert.training
@@ -989,7 +966,7 @@ def test_action_padding_marks_only_real_dimensions():
     step.max_action_dim = 32
     action = torch.ones(2, 3, 7)
 
-    padded, horizon_is_pad, dim_is_pad = step._pad_action(action)
+    padded, horizon_is_pad, dim_is_pad = step._pad_action(action, None)
 
     assert padded.shape == (2, 3, 32)
     assert torch.equal(padded[..., :7], action)

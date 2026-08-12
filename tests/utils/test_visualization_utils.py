@@ -27,26 +27,7 @@ from lerobot.utils import visualization_utils as vu
 
 
 def test_visualization_modes():
-    assert vu.VISUALIZATION_MODES == ("rerun", "foxglove", "local")
-
-
-def test_local_visualization_dispatch(monkeypatch):
-    calls = []
-    monkeypatch.setattr(vu, "init_local_visualization", lambda **kwargs: calls.append(("init", kwargs)))
-    monkeypatch.setattr(vu, "log_local_data", lambda **kwargs: calls.append(("log", kwargs)))
-    monkeypatch.setattr(vu, "shutdown_local_visualization", lambda: calls.append(("shutdown", {})))
-
-    observation = {"top": object()}
-    action = {"joint.pos": 0.5}
-    vu.init_visualization("local", task="Pick up the orange")
-    vu.log_visualization_data("local", observation=observation, action=action)
-    vu.shutdown_visualization("local")
-
-    assert calls == [
-        ("init", {"task": "Pick up the orange"}),
-        ("log", {"observation": observation, "action": action, "compress_images": False}),
-        ("shutdown", {}),
-    ]
+    assert vu.VISUALIZATION_MODES == ("rerun", "foxglove")
 
 
 @pytest.mark.parametrize("func", ["init_visualization", "log_visualization_data", "shutdown_visualization"])

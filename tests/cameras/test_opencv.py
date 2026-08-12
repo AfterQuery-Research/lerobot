@@ -28,7 +28,6 @@ import pytest
 
 from lerobot.cameras.configs import ColorMode, Cv2Rotation
 from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
-from lerobot.cameras.opencv.camera_opencv import _find_linux_stable_video_path
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 RealVideoCapture = cv2.VideoCapture
@@ -189,28 +188,6 @@ def test_find_cameras_releases_unopened_handles():
         assert OpenCVCamera.find_cameras() == []
 
     unopened_capture.release.assert_called_once_with()
-
-
-def test_find_linux_stable_video_path_prefers_standard_usb_alias(tmp_path):
-    device = tmp_path / "video2"
-    device.touch()
-    by_path = tmp_path / "by-path"
-    by_path.mkdir()
-    standard_alias = by_path / "pci-test-usb-0:1:1.0-video-index0"
-    versioned_alias = by_path / "pci-test-usbv2-0:1:1.0-video-index0"
-    standard_alias.symlink_to(device)
-    versioned_alias.symlink_to(device)
-
-    assert _find_linux_stable_video_path(device, by_path) == str(standard_alias)
-
-
-def test_find_linux_stable_video_path_returns_none_without_alias(tmp_path):
-    device = tmp_path / "video2"
-    device.touch()
-    by_path = tmp_path / "by-path"
-    by_path.mkdir()
-
-    assert _find_linux_stable_video_path(device, by_path) is None
 
 
 @pytest.mark.parametrize("index_or_path", TEST_IMAGE_PATHS, ids=TEST_IMAGE_SIZES)

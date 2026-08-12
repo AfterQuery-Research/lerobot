@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
@@ -27,6 +28,23 @@ from lerobot.optim import (
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 from ..rtc.configuration_rtc import RTCConfig
+
+DEFAULT_DISCRETE_ACTION_TOKENIZER = "allenai/MolmoAct2-FAST-Tokenizer"
+DEFAULT_DISCRETE_ACTION_TOKENIZER_REVISION = "d45593b4c863d0bc1ca064f8b352fa16b75c38e8"
+
+
+def _legacy_fast_tokenizer_snapshot_revision(tokenizer: str) -> str | None:
+    """Recover the revision from the old serialized HF snapshot path."""
+    parts = tokenizer.replace("\\", "/").split("/")
+    marker = "models--allenai--MolmoAct2-FAST-Tokenizer"
+    try:
+        marker_index = parts.index(marker)
+    except ValueError:
+        return None
+    suffix = parts[marker_index + 1 :]
+    if len(suffix) != 2 or suffix[0] != "snapshots" or len(suffix[1]) != 40:
+        return None
+    return suffix[1]
 
 
 @PreTrainedConfig.register_subclass("molmoact2")
@@ -44,7 +62,12 @@ class MolmoAct2Config(PreTrainedConfig):
 
     action_mode: str = "both"
     inference_action_mode: str | None = None
-    discrete_action_tokenizer: str = "allenai/MolmoAct2-FAST-Tokenizer"
+    # Portable Hub identity plus an optional runtime-only local source. Training
+    # clears the public load-path field before saving while retaining its value in
+    # a non-dataclass runtime attribute for offline use by the live policy.
+    discrete_action_tokenizer: str = DEFAULT_DISCRETE_ACTION_TOKENIZER
+    discrete_action_tokenizer_revision: str | None = DEFAULT_DISCRETE_ACTION_TOKENIZER_REVISION
+    discrete_action_tokenizer_load_path: str | None = None
     discrete_generation_max_steps: int | None = None
     norm_tag: str | None = None
 
@@ -136,6 +159,14 @@ class MolmoAct2Config(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        legacy_revision = _legacy_fast_tokenizer_snapshot_revision(self.discrete_action_tokenizer)
+        if legacy_revision is not None:
+            legacy_path = self.discrete_action_tokenizer
+            self.discrete_action_tokenizer = DEFAULT_DISCRETE_ACTION_TOKENIZER
+            self.discrete_action_tokenizer_revision = legacy_revision
+            if self.discrete_action_tokenizer_load_path is None and Path(legacy_path).is_dir():
+                self.discrete_action_tokenizer_load_path = legacy_path
+        self._runtime_discrete_action_tokenizer_load_path = self.discrete_action_tokenizer_load_path
         legacy_train_mode: str | None = None
         if self.train_action_expert_only:
             legacy_train_mode = "freeze"
@@ -178,6 +209,7 @@ class MolmoAct2Config(PreTrainedConfig):
             )
         if self.train_mode_vlm == "freeze" and self.action_mode != "continuous":
             raise ValueError("MolmoAct2 train_mode_vlm='freeze' requires action_mode='continuous'.")
+
         if self.chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}.")
         if self.n_action_steps < 1:
@@ -193,9 +225,7 @@ class MolmoAct2Config(PreTrainedConfig):
                 f"Unsupported model_dtype={self.model_dtype!r}. Expected 'float32', 'bfloat16', or 'float16'."
             )
         if not 0 <= self.llm_residual_dropout <= 1:
-            raise ValueError(
-                f"llm_residual_dropout must be in [0, 1], got {self.llm_residual_dropout}."
-            )
+            raise ValueError(f"llm_residual_dropout must be in [0, 1], got {self.llm_residual_dropout}.")
         if self.lora_rank < 1:
             raise ValueError(f"lora_rank must be >= 1, got {self.lora_rank}.")
         if self.lora_alpha < 1:
@@ -222,6 +252,21 @@ class MolmoAct2Config(PreTrainedConfig):
             )
         if self.max_sequence_length is not None and self.max_sequence_length < 1:
             raise ValueError(f"max_sequence_length must be >= 1 or None, got {self.max_sequence_length}.")
+
+    def discrete_action_tokenizer_source(self) -> tuple[str, str | None]:
+        """Return the runtime source and applicable Hub revision."""
+        load_path = self.discrete_action_tokenizer_load_path or getattr(
+            self, "_runtime_discrete_action_tokenizer_load_path", None
+        )
+        if load_path is not None:
+            return load_path, None
+        return self.discrete_action_tokenizer, self.discrete_action_tokenizer_revision
+
+    def clear_discrete_action_tokenizer_load_path(self) -> None:
+        """Remove the serializable local path without breaking this live policy."""
+        if self.discrete_action_tokenizer_load_path is not None:
+            self._runtime_discrete_action_tokenizer_load_path = self.discrete_action_tokenizer_load_path
+            self.discrete_action_tokenizer_load_path = None
 
     @property
     def observation_delta_indices(self) -> None:

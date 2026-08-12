@@ -25,6 +25,7 @@ import abc
 import logging
 from dataclasses import dataclass, field
 from threading import Event
+from typing import Literal
 
 import draccus
 
@@ -88,7 +89,9 @@ class RemoteInferenceConfig(InferenceEngineConfig):
     max_message_bytes: int = 16 * 1024 * 1024
     jpeg_quality: int = 95
     image_encoding: str = "jpeg"
-    execution_horizon: int = 15
+    # One row per prediction is the safe default for physical deployment.
+    execution_horizon: int = 1
+    bi_yam_action_mode: Literal["joint", "ee"] | None = None
     tls_root_cert_path: str | None = None
     tls_client_cert_path: str | None = None
     tls_client_key_path: str | None = None
@@ -108,6 +111,8 @@ class RemoteInferenceConfig(InferenceEngineConfig):
             raise ValueError("remote jpeg_quality must be between 1 and 100")
         if self.execution_horizon <= 0:
             raise ValueError("remote execution_horizon must be positive")
+        if self.bi_yam_action_mode not in (None, "joint", "ee"):
+            raise ValueError("remote bi_yam_action_mode must be joint, ee, or unset")
         if self.image_encoding.lower() not in {"raw_rgb", "png", "jpeg"}:
             raise ValueError("remote image_encoding must be raw_rgb, png, or jpeg")
         if bool(self.tls_client_cert_path) != bool(self.tls_client_key_path):
@@ -150,6 +155,14 @@ def create_inference_engine(
             parse_image_encoding,
         )
 
+        action_adapter = None
+        if config.bi_yam_action_mode is not None:
+            from .bi_yam import BiYAMActionAdapter
+
+            if robot_wrapper.robot_type != "bi_yam_follower":
+                raise ValueError("bi_yam_action_mode is only valid for a BiYAM follower")
+            action_adapter = BiYAMActionAdapter(config.bi_yam_action_mode)
+
         client_instance_id = config.client_instance_id or default_client_instance_id(robot_wrapper.robot_type)
         return RemoteInferenceEngine(
             settings=RemoteEngineSettings(
@@ -175,6 +188,7 @@ def create_inference_engine(
             task=task,
             fps=fps,
             shutdown_event=shutdown_event,
+            action_adapter=action_adapter,
         )
 
     if policy is None or preprocessor is None or postprocessor is None:

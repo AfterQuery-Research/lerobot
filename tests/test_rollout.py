@@ -59,7 +59,6 @@ def test_strategies_submodule_imports():
 
 def test_strategy_config_types():
     from lerobot.rollout import (
-        ActionProbeStrategyConfig,
         BaseStrategyConfig,
         DAggerStrategyConfig,
         EpisodicStrategyConfig,
@@ -67,9 +66,6 @@ def test_strategy_config_types():
         SentryStrategyConfig,
     )
 
-    action_probe = ActionProbeStrategyConfig()
-    assert action_probe.type == "action_probe"
-    assert action_probe.reset_robot is False
     assert BaseStrategyConfig().type == "base"
     assert SentryStrategyConfig().type == "sentry"
     assert HighlightStrategyConfig().type == "highlight"
@@ -94,7 +90,7 @@ def test_dagger_config_defaults():
 
 
 def test_inference_config_types():
-    from lerobot.rollout import RemoteInferenceConfig, RTCInferenceConfig, SyncInferenceConfig
+    from lerobot.rollout import RTCInferenceConfig, SyncInferenceConfig
 
     assert SyncInferenceConfig().type == "sync"
 
@@ -102,185 +98,6 @@ def test_inference_config_types():
     assert rtc.type == "rtc"
     assert rtc.queue_threshold == 30
     assert rtc.rtc is not None
-
-    remote = RemoteInferenceConfig()
-    assert remote.type == "remote"
-    assert remote.server_address == "127.0.0.1:8081"
-    assert remote.execution_horizon == 15
-
-
-def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
-    from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
-    from tests.mocks.mock_robot import MockRobotConfig
-
-    monkeypatch.setattr(sys, "argv", ["lerobot-rollout", "--inference.type=remote"])
-    cfg = RolloutConfig(robot=MockRobotConfig(), inference=RemoteInferenceConfig())
-
-    assert cfg.policy is None
-    assert cfg.device == "cpu"
-    assert cfg.display_data is False
-
-
-def test_rollout_logging_creates_shared_timestamped_artifact_directory(tmp_path, monkeypatch):
-    import draccus
-
-    import lerobot.scripts.lerobot_rollout as rollout_script
-    from lerobot.robots.bi_yam.config_bi_yam import BiYAMFollowerConfig, YAMArmConfig
-    from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
-
-    robot = BiYAMFollowerConfig(
-        id="test-dual-yam",
-        left_arm_config=YAMArmConfig(sim=True),
-        right_arm_config=YAMArmConfig(sim=True),
-        max_joint_delta=0.15,
-        max_gripper_delta=0.05,
-    )
-    cfg = RolloutConfig(
-        robot=robot,
-        inference=RemoteInferenceConfig(
-            server_address="policy-server.local:8081",
-            requested_model_id="test/model",
-            execution_horizon=16,
-        ),
-        enable_logging=True,
-        logging_dir=tmp_path,
-        fps=20,
-        duration=90,
-        task="Put all oranges in the bowl",
-    )
-    configured = []
-    monkeypatch.setattr(rollout_script, "init_logging", lambda *, log_file: configured.append(log_file))
-
-    run_dir = rollout_script._configure_rollout_logging(cfg, timestamp="20260805T010203Z")
-    config_path = run_dir / "resolved_config.yaml"
-    resolved = draccus.parse(RolloutConfig, config_path, args=[])
-
-    assert run_dir == tmp_path / "20260805T010203Z"
-    assert run_dir.is_dir()
-    assert configured == [run_dir / "rollout.log"]
-    assert robot.control_telemetry_path == run_dir / "control.jsonl"
-    assert resolved.enable_logging is True
-    assert resolved.logging_dir == tmp_path
-    assert resolved.fps == 20
-    assert resolved.duration == 90
-    assert resolved.task == "Put all oranges in the bowl"
-    assert resolved.inference.type == "remote"
-    assert resolved.inference.server_address == "policy-server.local:8081"
-    assert resolved.inference.requested_model_id == "test/model"
-    assert resolved.inference.execution_horizon == 16
-    assert resolved.robot.type == "bi_yam_follower"
-    assert resolved.robot.id == "test-dual-yam"
-    assert resolved.robot.max_joint_delta == 0.15
-    assert resolved.robot.max_gripper_delta == 0.05
-    assert resolved.robot.control_telemetry_path == run_dir / "control.jsonl"
-
-
-def test_rollout_logging_can_be_disabled(tmp_path, monkeypatch):
-    import lerobot.scripts.lerobot_rollout as rollout_script
-
-    robot = SimpleNamespace(control_telemetry_path=None)
-    cfg = SimpleNamespace(enable_logging=False, logging_dir=tmp_path, robot=robot)
-    configured = []
-    monkeypatch.setattr(rollout_script, "init_logging", lambda *, log_file: configured.append(log_file))
-
-    run_dir = rollout_script._configure_rollout_logging(cfg, timestamp="unused")
-
-    assert run_dir is None
-    assert configured == [None]
-    assert robot.control_telemetry_path is None
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_rollout_logging_flags_parse_with_draccus(tmp_path, monkeypatch):
-    import draccus
-
-    from lerobot.rollout import RolloutConfig
-    from tests.mocks.mock_robot import MockRobotConfig  # noqa: F401
-
-    args = [
-        "--robot.type=mock_robot",
-        "--inference.type=remote",
-        "--enable_logging=true",
-        f"--logging_dir={tmp_path}",
-    ]
-    monkeypatch.setattr(sys, "argv", ["lerobot-rollout", *args])
-
-    cfg = draccus.parse(RolloutConfig, args=args)
-
-    assert cfg.enable_logging is True
-    assert cfg.logging_dir == tmp_path
-
-
-def test_rollout_logs_unexpected_failure_and_tears_down(monkeypatch, caplog):
-    import logging
-
-    import lerobot.scripts.lerobot_rollout as rollout_script
-
-    ctx = object()
-    strategy = MagicMock()
-    strategy.run.side_effect = RuntimeError("synthetic rollout failure")
-    cfg = SimpleNamespace(
-        display_data=False,
-        dataset=None,
-        task="test",
-        strategy=SimpleNamespace(type="base"),
-        robot=SimpleNamespace(type="mock"),
-        fps=30.0,
-        duration=1.0,
-    )
-    monkeypatch.setattr(rollout_script, "_configure_rollout_logging", lambda cfg: None)
-    monkeypatch.setattr(
-        rollout_script,
-        "ProcessSignalHandler",
-        lambda **kwargs: SimpleNamespace(shutdown_event=object()),
-    )
-    monkeypatch.setattr(rollout_script, "build_rollout_context", lambda cfg, shutdown_event: ctx)
-    monkeypatch.setattr(rollout_script, "create_strategy", lambda strategy_cfg: strategy)
-
-    with (
-        caplog.at_level(logging.ERROR, logger=rollout_script.__name__),
-        pytest.raises(RuntimeError, match="synthetic rollout failure"),
-    ):
-        rollout_script.rollout.__wrapped__(cfg)
-
-    assert "Rollout failed" in caplog.text
-    assert "RuntimeError: synthetic rollout failure" in caplog.text
-    strategy.teardown.assert_called_once_with(ctx)
-
-
-def test_remote_rollout_config_rejects_local_policy_path(monkeypatch):
-    from lerobot.rollout import RemoteInferenceConfig, RolloutConfig
-    from tests.mocks.mock_robot import MockRobotConfig
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["lerobot-rollout", "--inference.type=remote", "--policy.path=user/policy"],
-    )
-    with pytest.raises(ValueError, match="does not load --policy.path"):
-        RolloutConfig(robot=MockRobotConfig(), inference=RemoteInferenceConfig())
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
-        ({"connect_timeout_s": 0}, "timeouts"),
-        ({"execution_horizon": 0}, "execution_horizon"),
-        ({"jpeg_quality": 101}, "jpeg_quality"),
-        ({"image_encoding": "webp"}, "image_encoding"),
-        ({"tls_client_cert_path": "cert.pem"}, "certificate and key"),
-        (
-            {"tls_client_cert_path": "cert.pem", "tls_client_key_path": "key.pem"},
-            "TLS root certificate",
-        ),
-        ({"tls_server_name_override": "policy.internal"}, "TLS root certificate"),
-    ],
-)
-def test_remote_inference_config_validation(kwargs, message):
-    from lerobot.rollout import RemoteInferenceConfig
-
-    with pytest.raises(ValueError, match=message):
-        RemoteInferenceConfig(**kwargs)
 
 
 def test_sentry_config_defaults():
@@ -489,138 +306,6 @@ def test_thread_safe_robot_properties():
     robot.disconnect()
 
 
-def test_strategy_uses_distinct_policy_start_and_end_resets():
-    from lerobot.rollout import BaseStrategyConfig
-    from lerobot.rollout.context import HardwareContext
-    from lerobot.rollout.robot_wrapper import ThreadSafeRobot
-    from lerobot.rollout.strategies.base import BaseStrategy
-
-    events = []
-    reset_position = {"joint.pos": 0.25}
-    end_position = {"joint.pos": 0.0}
-
-    class FakeEngine:
-        def reset(self):
-            events.append("engine.reset")
-
-        def start(self):
-            events.append("engine.start")
-
-    class ResettableRobot:
-        def arm(self):
-            events.append("robot.arm")
-
-        def reset_for_policy(self):
-            events.append("robot.reset_for_policy")
-            return reset_position
-
-        def reset_after_policy(self):
-            events.append("robot.reset_after_policy")
-            return end_position
-
-    hardware = HardwareContext(
-        robot_wrapper=ThreadSafeRobot(ResettableRobot()),
-        teleop=None,
-        initial_position={"joint.pos": -0.5},
-    )
-    ctx = SimpleNamespace(
-        runtime=SimpleNamespace(cfg=SimpleNamespace(interpolation_multiplier=1)),
-        policy=SimpleNamespace(inference=FakeEngine()),
-        hardware=hardware,
-    )
-    strategy = BaseStrategy(BaseStrategyConfig())
-
-    strategy._init_engine(ctx)
-
-    assert events == ["engine.reset", "engine.start", "robot.arm", "robot.reset_for_policy"]
-    assert hardware.initial_position == reset_position
-
-    strategy._return_to_initial_position(hardware)
-    assert events[-1] == "robot.reset_after_policy"
-
-
-@pytest.mark.parametrize("reset_robot", [False, True])
-def test_action_probe_only_prepares_robot_when_explicitly_requested(tmp_path, reset_robot):
-    from lerobot.rollout import ActionProbeStrategyConfig
-    from lerobot.rollout.context import HardwareContext
-    from lerobot.rollout.robot_wrapper import ThreadSafeRobot
-    from lerobot.rollout.strategies.action_probe import ActionProbeStrategy
-
-    events = []
-    reset_position = {"joint.pos": 0.25}
-
-    class FakeEngine:
-        def reset(self):
-            events.append("engine.reset")
-
-        def start(self):
-            events.append("engine.start")
-
-    class ResettableRobot:
-        def arm(self):
-            events.append("robot.arm")
-
-        def disarm(self):
-            events.append("robot.disarm")
-
-        def reset_for_policy(self):
-            events.append("robot.reset")
-            return reset_position
-
-    hardware = HardwareContext(
-        robot_wrapper=ThreadSafeRobot(ResettableRobot()),
-        teleop=None,
-        initial_position={"joint.pos": -0.5},
-    )
-    ctx = SimpleNamespace(
-        runtime=SimpleNamespace(cfg=SimpleNamespace(interpolation_multiplier=1)),
-        policy=SimpleNamespace(inference=FakeEngine()),
-        hardware=hardware,
-    )
-    strategy = ActionProbeStrategy(
-        ActionProbeStrategyConfig(
-            action_log_path=tmp_path / "actions.jsonl",
-            reset_robot=reset_robot,
-        )
-    )
-
-    try:
-        strategy.setup(ctx)
-    finally:
-        strategy._close_action_file()
-
-    expected = ["engine.reset", "engine.start"]
-    if reset_robot:
-        expected.extend(["robot.arm", "robot.reset"])
-        assert hardware.initial_position == reset_position
-    else:
-        assert hardware.initial_position == {"joint.pos": -0.5}
-    expected.append("robot.disarm")
-    assert events == expected
-
-
-def test_send_next_action_can_discard_without_hardware_dispatch():
-    from lerobot.rollout.strategies import send_next_action
-    from lerobot.utils.action_interpolator import ActionInterpolator
-
-    interpolator = ActionInterpolator()
-    interpolator.add(torch.tensor([0.25, -0.5]))
-    robot_wrapper = MagicMock()
-    engine = MagicMock()
-    ctx = SimpleNamespace(
-        policy=SimpleNamespace(inference=engine),
-        data=SimpleNamespace(dataset_features={}, ordered_action_keys=["left.pos", "right.pos"]),
-        processors=SimpleNamespace(robot_action_processor=lambda pair: pair[0]),
-        hardware=SimpleNamespace(robot_wrapper=robot_wrapper),
-    )
-
-    action = send_next_action({}, {}, ctx, interpolator, execute=False)
-
-    assert action == {"left.pos": pytest.approx(0.25), "right.pos": pytest.approx(-0.5)}
-    robot_wrapper.send_action.assert_not_called()
-    engine.notify_action_sent.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # Strategy factory
 # ---------------------------------------------------------------------------
@@ -628,8 +313,6 @@ def test_send_next_action_can_discard_without_hardware_dispatch():
 
 def test_create_strategy_dispatches():
     from lerobot.rollout import (
-        ActionProbeStrategy,
-        ActionProbeStrategyConfig,
         BaseStrategy,
         BaseStrategyConfig,
         DAggerStrategy,
@@ -641,7 +324,6 @@ def test_create_strategy_dispatches():
         create_strategy,
     )
 
-    assert isinstance(create_strategy(ActionProbeStrategyConfig()), ActionProbeStrategy)
     assert isinstance(create_strategy(BaseStrategyConfig()), BaseStrategy)
     assert isinstance(create_strategy(SentryStrategyConfig()), SentryStrategy)
     assert isinstance(create_strategy(DAggerStrategyConfig()), DAggerStrategy)
@@ -679,47 +361,6 @@ def test_create_inference_engine_sync():
         device="cpu",
     )
     assert isinstance(engine, SyncInferenceEngine)
-
-
-def test_create_inference_engine_remote():
-    from lerobot.rollout import RemoteInferenceConfig, create_inference_engine
-    from lerobot.rollout.inference.remote import RemoteInferenceEngine
-
-    robot_wrapper = MagicMock(robot_type="mock")
-    robot_wrapper.inner.id = "mock-id"
-    robot_wrapper.observation_features = {"top": (3, 4, 3)}
-    features = {
-        "observation.state": {
-            "dtype": "float32",
-            "shape": (2,),
-            "names": ["joint_0.pos", "joint_1.pos"],
-        },
-        "action": {
-            "dtype": "float32",
-            "shape": (2,),
-            "names": ["joint_0.pos", "joint_1.pos"],
-        },
-        "observation.images.top": {
-            "dtype": "image",
-            "shape": (3, 4, 3),
-            "names": ["height", "width", "channels"],
-        },
-    }
-    engine = create_inference_engine(
-        RemoteInferenceConfig(image_encoding="png"),
-        policy=None,
-        preprocessor=None,
-        postprocessor=None,
-        robot_wrapper=robot_wrapper,
-        hw_features={},
-        dataset_features=features,
-        ordered_action_keys=["joint_0.pos", "joint_1.pos"],
-        task="test",
-        fps=30.0,
-        device="cpu",
-    )
-
-    assert isinstance(engine, RemoteInferenceEngine)
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from lerobot.remote_inference.client import RemotePolicyClient
 
+    from .bi_yam import BiYAMActionAdapter, BiYAMQueryAnchor
+
 
 @dataclass(frozen=True)
 class RemoteEngineSettings:
@@ -78,6 +80,13 @@ class _ObservationSnapshot:
 class _PendingChunk:
     chunk: PolicyActionChunk
     round_trip_ns: int
+    anchor: BiYAMQueryAnchor | None
+
+
+@dataclass(frozen=True)
+class _QueuedAction:
+    action: np.ndarray
+    anchor: BiYAMQueryAnchor | None
 
 
 class RemoteInferenceEngine(InferenceEngine):
@@ -93,6 +102,7 @@ class RemoteInferenceEngine(InferenceEngine):
         task: str,
         fps: float,
         shutdown_event: threading.Event | None = None,
+        action_adapter: BiYAMActionAdapter | None = None,
     ) -> None:
         if settings.execution_horizon <= 0:
             raise ValueError("remote execution horizon must be positive")
@@ -103,10 +113,11 @@ class RemoteInferenceEngine(InferenceEngine):
         self._task = task
         self._fps = fps
         self._global_shutdown_event = shutdown_event
+        self._action_adapter = action_adapter
 
         self._manifest = self._build_embodiment_manifest()
         self._client: RemotePolicyClient | None = None
-        self._action_queue: deque[torch.Tensor] = deque()
+        self._action_queue: deque[_QueuedAction] = deque()
         self._pending_chunk: _PendingChunk | None = None
         self._latest_observation: _ObservationSnapshot | None = None
         self._sequence = 0
@@ -134,6 +145,10 @@ class RemoteInferenceEngine(InferenceEngine):
         action_names = tuple(self._dataset_features[ACTION]["names"])
         if action_names != self._ordered_action_keys:
             raise ValueError("remote action key ordering must match dataset action features")
+        if self._action_adapter is not None:
+            self._action_adapter.validate_hardware_features(state_names, action_names)
+            state_names = self._action_adapter.state_features
+            action_names = self._action_adapter.action_features
         cameras = []
         for key, shape in self._robot.observation_features.items():
             if not isinstance(shape, tuple):
@@ -180,6 +195,8 @@ class RemoteInferenceEngine(InferenceEngine):
             return
         from lerobot.remote_inference.client import RemotePolicyClient, RemotePolicyClientConfig
 
+        if self._action_adapter is not None:
+            self._action_adapter.start()
         self._client = RemotePolicyClient(
             RemotePolicyClientConfig(
                 server_address=self._settings.server_address,
@@ -263,12 +280,13 @@ class RemoteInferenceEngine(InferenceEngine):
         if self.failed or not self._policy_active.is_set():
             return
         now_ns = time.monotonic_ns()
+        values = {key: _copy_observation_value(value) for key, value in obs.items()}
         with self._lock:
             snapshot = _ObservationSnapshot(
                 sequence=self._sequence,
                 capture_tick=self._current_tick,
                 capture_monotonic_ns=now_ns,
-                values={key: _copy_observation_value(value) for key, value in obs.items()},
+                values=values,
             )
             self._sequence += 1
             self._latest_observation = snapshot
@@ -280,11 +298,26 @@ class RemoteInferenceEngine(InferenceEngine):
         del obs_frame
         with self._lock:
             self._activate_pending_if_due_locked()
-            action = self._action_queue.popleft() if self._action_queue else None
+            queued = self._action_queue.popleft() if self._action_queue else None
             should_request = self._should_request_locked()
         if should_request:
             self._observation_ready.set()
-        return action
+        if queued is None:
+            return None
+        try:
+            action = queued.action
+            if self._action_adapter is not None:
+                action = self._action_adapter.to_joint_action(action, queued.anchor)
+            return torch.from_numpy(np.asarray(action, dtype=np.float32).copy())
+        except Exception as exc:
+            logger.error("Remote BiYAM action rejected before dispatch: %s", exc)
+            with self._lock:
+                self._clear_scheduler_locked()
+            self._failed.set()
+            self._policy_active.clear()
+            if self._global_shutdown_event is not None:
+                self._global_shutdown_event.set()
+            raise RuntimeError("remote action failed robot-side safety validation") from exc
 
     def notify_action_sent(self) -> None:
         with self._lock:
@@ -357,8 +390,14 @@ class RemoteInferenceEngine(InferenceEngine):
         previous_actions_sent = self._active_chunk_actions_sent
         previous_switch_tick = self._switch_tick
         future = chunk.actions[elapsed_steps:]
+        # execution_horizon=1 means exactly one prediction row, not a tail
+        # fallback from the same query while the next request is in flight.
+        if self._settings.execution_horizon == 1:
+            future = future[:1]
         self._action_queue.clear()
-        self._action_queue.extend(torch.from_numpy(action.copy()) for action in future)
+        self._action_queue.extend(
+            _QueuedAction(action=action.copy(), anchor=pending.anchor) for action in future
+        )
         self._active_chunk_sequence = chunk.observation_sequence
         self._active_chunk_actions_sent = 0
 
@@ -401,8 +440,14 @@ class RemoteInferenceEngine(InferenceEngine):
         self,
         snapshot: _ObservationSnapshot,
         queue_depth: int,
-    ) -> PolicyObservation:
+    ) -> tuple[PolicyObservation, BiYAMQueryAnchor | None]:
         frame = build_dataset_frame(self._dataset_features, snapshot.values, prefix=OBS_STR)
+        hardware_state = np.asarray(frame[OBS_STATE], dtype=np.float64)
+        state = hardware_state.astype(np.float32)
+        anchor = None
+        if self._action_adapter is not None:
+            prepared = self._action_adapter.prepare_observation(hardware_state)
+            state, anchor = prepared.state, prepared.anchor
         images = tuple(
             ImageFrame(
                 key=camera.key,
@@ -411,16 +456,19 @@ class RemoteInferenceEngine(InferenceEngine):
             )
             for camera in self._manifest.cameras
         )
-        return PolicyObservation(
-            episode_id="rollout",
-            sequence=snapshot.sequence,
-            capture_tick=snapshot.capture_tick,
-            capture_monotonic_ns=snapshot.capture_monotonic_ns,
-            state=np.asarray(frame[OBS_STATE], dtype=np.float32),
-            images=images,
-            task=self._task,
-            last_executed_tick=self._last_executed_tick,
-            action_queue_depth=queue_depth,
+        return (
+            PolicyObservation(
+                episode_id="rollout",
+                sequence=snapshot.sequence,
+                capture_tick=snapshot.capture_tick,
+                capture_monotonic_ns=snapshot.capture_monotonic_ns,
+                state=state,
+                images=images,
+                task=self._task,
+                last_executed_tick=self._last_executed_tick,
+                action_queue_depth=queue_depth,
+            ),
+            anchor,
         )
 
     def _inference_loop(self) -> None:
@@ -441,7 +489,7 @@ class RemoteInferenceEngine(InferenceEngine):
                 self._last_submitted_sequence = snapshot.sequence
                 self._request_in_flight = True
             try:
-                observation = self._make_policy_observation(snapshot, queue_depth)
+                observation, anchor = self._make_policy_observation(snapshot, queue_depth)
                 request_started_ns = time.perf_counter_ns()
                 chunk = self._client.infer(observation)
                 round_trip_ns = time.perf_counter_ns() - request_started_ns
@@ -465,7 +513,9 @@ class RemoteInferenceEngine(InferenceEngine):
                         if self._should_request_locked():
                             self._observation_ready.set()
                         continue
-                    self._pending_chunk = _PendingChunk(chunk=chunk, round_trip_ns=round_trip_ns)
+                    self._pending_chunk = _PendingChunk(
+                        chunk=chunk, round_trip_ns=round_trip_ns, anchor=anchor
+                    )
                     if self._active_chunk_sequence is None:
                         self._activate_pending_chunk_locked()
                     else:
