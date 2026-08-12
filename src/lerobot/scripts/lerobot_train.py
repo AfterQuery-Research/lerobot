@@ -91,11 +91,12 @@ def _drop_inapplicable_normalizer_overrides(
 
 
 def _clear_runtime_processor_load_paths(*policy_configs: Any) -> None:
-    """Keep local tokenizer caches out of portable checkpoint metadata."""
+    """Keep local model/tokenizer caches out of portable checkpoint metadata."""
     for policy_config in policy_configs:
         policy_type = getattr(policy_config, "type", None)
         if policy_type == "pi05":
             policy_config.tokenizer_load_path = None
+            policy_config.pretrained_path = None
         elif policy_type == "molmoact2":
             policy_config.clear_discrete_action_tokenizer_load_path()
 
