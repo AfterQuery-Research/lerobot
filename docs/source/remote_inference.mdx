@@ -67,6 +67,20 @@ uv run lerobot-policy-server \
     --port=8081
 ```
 
+The four long-gripper UMI/YAM checkpoints produced by
+`examples/umi_yam/train_four_models.sbatch` are also self-contained. Set
+`CHECKPOINT` to the exact published model revision and use the saved-checkpoint
+form for either MolmoAct2 or Pi0.5:
+
+```bash
+CHECKPOINT=<published-long-gripper-checkpoint>
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path="$CHECKPOINT" \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
 ## Discover client hardware
 
 ### Find CAN adapter serials
@@ -148,7 +162,9 @@ installation once per shell on the robot computer:
 ```bash
 SERVER=<reachable-server-ip>:8081
 MODEL_ID=<served-checkpoint-id>
-TASK=<checkpoint-task>
+TASK="pick up oranges and place them in the bowl"
+ACTION_MODE=<joint-or-ee>
+EXECUTION_HORIZON=1
 ROBOT_ID=<robot-id>
 LEFT_CAN=<left-can-adapter-serial>
 RIGHT_CAN=<right-can-adapter-serial>
@@ -199,10 +215,30 @@ RIGHT_CAMERA=<right-opencv-stable-path>
 CAMERAS="{left: {type: opencv, index_or_path: '$LEFT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}, right: {type: opencv, index_or_path: '$RIGHT_CAMERA', width: 1280, height: 720, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
 ```
 
+### Two custom UMI wrist cameras (long-gripper checkpoints)
+
+The four long-gripper checkpoints use the same two physical custom-UMI wrist
+cameras as the demonstrations. Their external model keys and order are exactly
+`umi1`, then `umi2`; `umi1` is the left arm and `umi2` is the right arm. Use
+the stable OpenCV paths and the recorded 800-by-600 profile:
+
+```bash
+UMI1_CAMERA=<left-umi-opencv-stable-path>
+UMI2_CAMERA=<right-umi-opencv-stable-path>
+
+CAMERAS="{umi1: {type: opencv, index_or_path: '$UMI1_CAMERA', width: 800, height: 600, fps: 30, fourcc: 'MJPG', warmup_s: 2}, umi2: {type: opencv, index_or_path: '$UMI2_CAMERA', width: 800, height: 600, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
+```
+
+The policy server rejects different camera keys, order, or dimensions during
+the session handshake. Verify both previews before continuing; do not infer
+left/right from `/dev/videoN` numbering.
+
 `SERVER` is the policy-server address reachable from the robot computer.
 `MODEL_ID` must exactly match the server's `--policy.pretrained_name_or_path`.
-Use the checkpoint's training instruction for `TASK`; for the Pi0.5 oranges
-checkpoints above, use `TASK="Put all oranges in the bowl"`.
+Use the checkpoint's exact training instruction for `TASK`. The four
+long-gripper checkpoints require the lower-case string shown above. Set
+`ACTION_MODE=ee` for an `ee20` checkpoint or `ACTION_MODE=joint` for a
+`joint14` checkpoint; a mismatched mode is rejected before motion.
 `ROBOT_ID` is a stable name chosen for this physical robot; it selects the
 robot's local calibration file. Use the same ID every time on that robot.
 `DISPLAY_DATA=false` keeps the local camera preview disabled by default. Set it
@@ -276,7 +312,8 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id="$MODEL_ID" \
-    --inference.execution_horizon=15 \
+    --inference.bi_yam_action_mode="$ACTION_MODE" \
+    --inference.execution_horizon="$EXECUTION_HORIZON" \
     --robot.type=bi_yam_follower \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
@@ -309,7 +346,8 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id="$MODEL_ID" \
-    --inference.execution_horizon=15 \
+    --inference.bi_yam_action_mode="$ACTION_MODE" \
+    --inference.execution_horizon="$EXECUTION_HORIZON" \
     --robot.type=bi_yam_follower \
     --robot.id="$ROBOT_ID" \
     --robot.left_arm_config.adapter_serial="$LEFT_CAN" \
@@ -324,20 +362,20 @@ uv run lerobot-rollout \
     --duration=60
 ```
 
-MolmoAct2 predicts 30 future actions per request. `execution_horizon=15`
-commits the client to 15 latency-aligned actions from the active prediction
-before switching to the next one. The next request is still made
-asynchronously: the client measures recent round-trip latency and starts
-inference early enough for the result to arrive near the execution boundary.
-An early result waits for that boundary; if a result is late, the client keeps
-executing the unused tail of the previous 30-action chunk instead of stopping.
-Returned actions that became stale while inference was running are discarded
-by timestep before the chunk can become active.
+These four policies predict 24 future actions per request. Keep
+`EXECUTION_HORIZON=1` for the first hardware deployment: the client executes
+only the first action anchored to the measured query state, then requests a
+fresh prediction. It does not fall through to the unused tail while waiting.
+This is intentionally conservative and avoids committing the robot to an
+open-loop trajectory before the new EE/IK path has been validated on hardware.
 
-Shorter execution horizons react to new observations sooner but can switch
-between inconsistent trajectories more often. Longer horizons preserve motion
-more coherently but run open-loop for longer. The tested starting value for the
-30 Hz dual-YAM setup is `15`, or 0.5 seconds of committed control.
+In `ee` mode, each arm's 20-D policy row is decoded in the query's measured
+I2RT `grasp_site` frame and solved independently by I2RT. There is no local
+axis correction or legacy UMI bridge. A malformed row, IK failure, model/frame
+mismatch, or joint-limit violation fails closed before `robot.send_action`.
+In `joint` mode, the 14-D row is validated and passed through in the exact
+BiYAM driver order. In both modes the driver's `0.10` radian and `0.03`
+normalized-gripper per-tick limits remain the final motion bounds.
 
 `--enable_logging=true` creates a UTC-timestamped directory for each invocation
 under `outputs/runs/` containing `rollout.log`, `control.jsonl`, and
@@ -394,7 +432,8 @@ uv run lerobot-rollout \
     --inference.type=remote \
     --inference.server_address="$SERVER" \
     --inference.requested_model_id=allenai/MolmoAct2-BimanualYAM \
-    --inference.execution_horizon=15 \
+    --inference.bi_yam_action_mode=joint \
+    --inference.execution_horizon=1 \
     --robot.type=bi_yam_simulator \
     --robot.backend=mujoco \
     --task="Pick up the oranges and put them in the bowl" \

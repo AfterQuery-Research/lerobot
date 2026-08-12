@@ -106,7 +106,7 @@ def test_inference_config_types():
     remote = RemoteInferenceConfig()
     assert remote.type == "remote"
     assert remote.server_address == "127.0.0.1:8081"
-    assert remote.execution_horizon == 15
+    assert remote.execution_horizon == 1
 
 
 def test_remote_rollout_config_does_not_require_local_policy(monkeypatch):
