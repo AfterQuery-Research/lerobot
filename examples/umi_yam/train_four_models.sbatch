@@ -36,6 +36,9 @@ readonly MOLMO_TOKENIZER_REPO="allenai/MolmoAct2-FAST-Tokenizer"
 readonly MOLMO_TOKENIZER_REVISION="d45593b4c863d0bc1ca064f8b352fa16b75c38e8"
 readonly PI05_REPO="lerobot/pi05_base"
 readonly PI05_REVISION="b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba"
+readonly PI05_TOKENIZER_REPO="google/paligemma-3b-pt-224"
+readonly PI05_TOKENIZER_REVISION="35e4f46485b4d07967e7e9935bc3786aad50687c"
+readonly DEFAULT_PI05_TOKENIZER_HUB_CACHE="/n/holylabs/kempner_ydu_lab/Lab/asethi/hf-cache/hub"
 readonly EE_REPO="brandonyang/dual-lidar-combined-filtered-long-gripper"
 readonly EE_REVISION="a29ae6a5531584fb950c7bb3bb5895f18421b108"
 readonly JOINT_REPO="ASethi04/dual-lidar-combined-filtered-joint-positions-long-gripper-trainable"
@@ -176,6 +179,36 @@ case "$SELECTION" in
   *) echo "invalid checkpoint selection: $SELECTION" >&2; exit 2 ;;
 esac
 
+PI05_TOKENIZER_SNAPSHOT=
+if [[ $MODEL == pi05 ]]; then
+  PI05_TOKENIZER_HUB_CACHE=${UMI_YAM_PI05_TOKENIZER_HUB_CACHE:-$DEFAULT_PI05_TOKENIZER_HUB_CACHE}
+  PI05_TOKENIZER_SNAPSHOT=$(UMI_RESOLVE_REPO="$PI05_TOKENIZER_REPO" \
+    UMI_RESOLVE_REVISION="$PI05_TOKENIZER_REVISION" \
+    UMI_RESOLVE_CACHE="$PI05_TOKENIZER_HUB_CACHE" "$VENV/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+from huggingface_hub import snapshot_download
+
+repo = os.environ["UMI_RESOLVE_REPO"]
+revision = os.environ["UMI_RESOLVE_REVISION"]
+cache = Path(os.environ["UMI_RESOLVE_CACHE"]).resolve()
+snapshot = Path(
+    snapshot_download(repo, revision=revision, cache_dir=cache, local_files_only=True)
+).resolve()
+assert snapshot.name == revision and snapshot.parent.name == "snapshots"
+assert snapshot.parent.parent.name == "models--google--paligemma-3b-pt-224"
+required = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json")
+assert all((snapshot / name).is_file() for name in required)
+config = json.loads((snapshot / "config.json").read_text())
+assert config["model_type"] == "paligemma" and config["vocab_size"] == 257216
+print(snapshot)
+PY
+  )
+  readonly PI05_TOKENIZER_SNAPSHOT
+fi
+
 readonly COLOR_TRANSFORMS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.8,1.2]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.8,1.2]}},"saturation":{"weight":1.0,"type":"ColorJitter","kwargs":{"saturation":[0.8,1.2]}}}'
 DATASET_ARGS=(
   --dataset.repo_id="$DATA_REPO"
@@ -276,6 +309,9 @@ PY
     readonly PI05_SNAPSHOT
     SOURCE_ARGS=(
       --policy.path="$PI05_SNAPSHOT"
+      --policy.tokenizer_name="$PI05_TOKENIZER_REPO"
+      --policy.tokenizer_revision="$PI05_TOKENIZER_REVISION"
+      --policy.tokenizer_load_path="$PI05_TOKENIZER_SNAPSHOT"
       --policy.device=cuda
       --policy.dtype=float32
       --policy.chunk_size=24
@@ -293,6 +329,14 @@ PY
       '--rename_map={"observation.images.umi1":"observation.images.left_wrist_0_rgb","observation.images.umi2":"observation.images.right_wrist_0_rgb"}'
     )
   fi
+fi
+
+if [[ $MODEL == pi05 && -n $RESUME_CONFIG ]]; then
+  SOURCE_ARGS+=(
+    --policy.tokenizer_name="$PI05_TOKENIZER_REPO"
+    --policy.tokenizer_revision="$PI05_TOKENIZER_REVISION"
+    --policy.tokenizer_load_path="$PI05_TOKENIZER_SNAPSHOT"
+  )
 fi
 
 JOB_NAME=umi-yam-$UMI_YAM_PROFILE-$UMI_YAM_RUN_ID

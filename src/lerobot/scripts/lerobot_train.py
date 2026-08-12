@@ -90,6 +90,13 @@ def _drop_inapplicable_normalizer_overrides(
     postprocessor_overrides.pop("unnormalizer_processor", None)
 
 
+def _clear_runtime_processor_load_paths(*policy_configs: Any) -> None:
+    """Remove local-only processor sources after their processors are instantiated."""
+    for policy_config in policy_configs:
+        if getattr(policy_config, "type", None) == "pi05":
+            policy_config.tokenizer_load_path = None
+
+
 @contextmanager
 def _make_eval_envs(cfg: TrainPipelineConfig) -> Iterator[dict[str, dict[int, Any]]]:
     """Create evaluation environments for one run and always dispose of them."""
@@ -430,6 +437,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             pretrained_revision=getattr(cfg.policy, "pretrained_revision", None),
             **processor_kwargs,
         )
+        _clear_runtime_processor_load_paths(active_cfg, getattr(policy, "config", None))
 
     if is_main_process:
         logging.info("Creating optimizer and scheduler")

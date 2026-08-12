@@ -23,6 +23,8 @@ from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from ..rtc.configuration_rtc import RTCConfig
 
 DEFAULT_IMAGE_SIZE = 224
+DEFAULT_TOKENIZER_NAME = "google/paligemma-3b-pt-224"
+DEFAULT_TOKENIZER_REVISION = "35e4f46485b4d07967e7e9935bc3786aad50687c"
 
 
 @PreTrainedConfig.register_subclass("pi05")
@@ -67,6 +69,11 @@ class PI05Config(PreTrainedConfig):
     # Add empty images. Used to add empty cameras when no image features are present.
     empty_cameras: int = 0
 
+    # Portable tokenizer identity plus an optional runtime-only local source. The
+    # processor serializes the identity/revision, never tokenizer_load_path.
+    tokenizer_name: str = DEFAULT_TOKENIZER_NAME
+    tokenizer_revision: str | None = DEFAULT_TOKENIZER_REVISION
+    tokenizer_load_path: str | None = None
     tokenizer_max_length: int = 200  # see openpi `__post_init__`
 
     normalization_mapping: dict[str, NormalizationMode] = field(
@@ -100,8 +107,6 @@ class PI05Config(PreTrainedConfig):
     scheduler_warmup_steps: int = 1_000
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
-
-    tokenizer_max_length: int = 200  # see openpi `__post_init__`
 
     def __post_init__(self):
         super().__post_init__()

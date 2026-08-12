@@ -197,12 +197,23 @@ def make_pre_post_processors(
                 ),
             )
 
+        preprocessor_overrides = {
+            name: dict(step_overrides)
+            for name, step_overrides in (kwargs.get("preprocessor_overrides") or {}).items()
+        }
+        if policy_cfg.type == "pi05":
+            tokenizer_overrides = preprocessor_overrides.setdefault("tokenizer_processor", {})
+            for field_name in ("tokenizer_name", "tokenizer_revision", "tokenizer_load_path"):
+                value = getattr(policy_cfg, field_name, None)
+                if value is not None:
+                    tokenizer_overrides.setdefault(field_name, value)
+
         preprocessor = PolicyProcessorPipeline.from_pretrained(
             pretrained_model_name_or_path=pretrained_path,
             config_filename=kwargs.get(
                 "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
             ),
-            overrides=kwargs.get("preprocessor_overrides", {}),
+            overrides=preprocessor_overrides,
             to_transition=batch_to_transition,
             to_output=transition_to_batch,
             revision=pretrained_revision,

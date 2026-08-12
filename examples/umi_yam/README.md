@@ -13,7 +13,8 @@ per-rank batch 4 (global batch 64), and checkpoints every 1,000 steps.
 
 Model pins are MolmoAct2 `8dcbed66f2380e4393189c303ea72488eb9e63c2`, FAST tokenizer
 `d45593b4c863d0bc1ca064f8b352fa16b75c38e8`, and Pi0.5
-`b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba`. Dataset pins are Cartesian
+`b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba` with PaliGemma tokenizer
+`35e4f46485b4d07967e7e9935bc3786aad50687c`. Dataset pins are Cartesian
 `a29ae6a5531584fb950c7bb3bb5895f18421b108` and published joints
 `387d696eb36de411a11c8b2612a6f19822ca3a53`. The 182 episodes and 179,951 frames yield 175,583 H24
 queries after tail removal; no episode is excluded.
@@ -88,6 +89,7 @@ export UMI_YAM_VENV=/path/to/training-venv
 export UMI_YAM_RUN_ROOT=/n/netscratch/ydu_lab/Lab/asethi/umi-yam-runs
 export UMI_YAM_RUN_ID=long-gripper182-i2rt7ed-v1
 export UMI_YAM_HF_HOME=/n/holylabs/kempner_ydu_lab/Lab/asethi/hf-cache
+export UMI_YAM_PI05_TOKENIZER_HUB_CACHE=/n/holylabs/kempner_ydu_lab/Lab/asethi/hf-cache/hub
 export UMI_YAM_EE_CACHE_ROOT=/n/netscratch/ydu_lab/Lab/asethi/umi-yam-data/dual-lidar-combined-filtered-long-gripper-ee20-h24-cache
 export UMI_YAM_JOINT_ROOT=/n/netscratch/ydu_lab/Lab/asethi/umi-yam-data/dual-lidar-combined-filtered-joint-positions-long-gripper-trainable
 mkdir -p /n/netscratch/ydu_lab/Lab/asethi/umi-yam-runs/slurm

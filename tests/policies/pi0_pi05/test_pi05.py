@@ -16,21 +16,95 @@
 
 """Test script to verify PI0.5 (pi05) support in PI0 policy"""
 
+import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
 
 pytest.importorskip("transformers")
 
-from lerobot.policies.factory import make_policy_config  # noqa: E402
+from lerobot.configs import PreTrainedConfig  # noqa: E402
+from lerobot.configs.default import DatasetConfig  # noqa: E402
+from lerobot.configs.train import TrainPipelineConfig  # noqa: E402
+from lerobot.policies.factory import make_policy_config, make_pre_post_processors  # noqa: E402
 from lerobot.policies.pi05 import (  # noqa: E402
     PI05Config,
     PI05Policy,
     make_pi05_pre_post_processors,  # noqa: E402
 )
+from lerobot.scripts.lerobot_train import _clear_runtime_processor_load_paths  # noqa: E402
 from lerobot.utils.random_utils import set_seed
 from tests.utils import require_cuda, require_hf_token  # noqa: E402
+
+
+def test_pretrained_processor_uses_local_pin_but_saves_portable_configs(tmp_path):
+    (tmp_path / "policy_preprocessor.json").write_text(
+        json.dumps(
+            {
+                "name": "policy_preprocessor",
+                "steps": [
+                    {
+                        "registry_name": "tokenizer_processor",
+                        "config": {"tokenizer_name": "unpinned/saved-tokenizer"},
+                    }
+                ],
+            }
+        )
+    )
+    (tmp_path / "policy_postprocessor.json").write_text(
+        json.dumps({"name": "policy_postprocessor", "steps": []})
+    )
+    local_snapshot = "/cache/models--google--paligemma-3b-pt-224/snapshots/pinned"
+    config = PI05Config(tokenizer_load_path=local_snapshot)
+    training_config = TrainPipelineConfig(dataset=DatasetConfig(repo_id="test/dataset"), policy=config)
+    policy = SimpleNamespace(config=config)
+
+    with patch("lerobot.processor.tokenizer_processor.AutoTokenizer.from_pretrained") as load:
+        preprocessor, _ = make_pre_post_processors(config, pretrained_path=str(tmp_path))
+
+    load.assert_called_once_with(local_snapshot)
+    tokenizer_step = preprocessor.steps[0]
+    assert tokenizer_step.tokenizer_name == "google/paligemma-3b-pt-224"
+    assert tokenizer_step.tokenizer_revision == "35e4f46485b4d07967e7e9935bc3786aad50687c"
+    assert tokenizer_step.tokenizer_load_path == local_snapshot
+    assert tokenizer_step.get_config() == {
+        "max_length": 512,
+        "task_key": "task",
+        "padding_side": "right",
+        "padding": "max_length",
+        "truncation": True,
+        "tokenizer_name": "google/paligemma-3b-pt-224",
+        "tokenizer_revision": "35e4f46485b4d07967e7e9935bc3786aad50687c",
+    }
+
+    preprocessor.save_pretrained(tmp_path)
+    _clear_runtime_processor_load_paths(config, policy.config)
+    config._save_pretrained(tmp_path)
+    training_config._save_pretrained(tmp_path)
+
+    policy_payload = json.loads((tmp_path / "config.json").read_text())
+    train_payload = json.loads((tmp_path / "train_config.json").read_text())
+    processor_payload = json.loads((tmp_path / "policy_preprocessor.json").read_text())
+    assert policy_payload["tokenizer_load_path"] is None
+    assert train_payload["policy"]["tokenizer_load_path"] is None
+    assert "tokenizer_load_path" not in processor_payload["steps"][0]["config"]
+
+    resume_config = TrainPipelineConfig.from_pretrained(
+        tmp_path, cli_args=["--policy.tokenizer_load_path=/cache/resolved-on-resume"]
+    )
+    assert resume_config.policy.tokenizer_load_path == "/cache/resolved-on-resume"
+
+    portable_config = PreTrainedConfig.from_pretrained(tmp_path)
+    with patch("lerobot.processor.tokenizer_processor.AutoTokenizer.from_pretrained") as load:
+        portable_preprocessor, _ = make_pre_post_processors(portable_config, pretrained_path=str(tmp_path))
+
+    load.assert_called_once_with(
+        "google/paligemma-3b-pt-224",
+        revision="35e4f46485b4d07967e7e9935bc3786aad50687c",
+    )
+    assert portable_preprocessor.steps[0].tokenizer_load_path is None
 
 
 def test_preprocess_images_preserves_configured_slots_when_leading_camera_is_missing():
