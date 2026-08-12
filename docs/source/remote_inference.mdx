@@ -55,16 +55,16 @@ the left `umi1` and right `umi2` wrist images at 800x600 and 30 FPS, and a
 24-row prediction horizon. A gripper value is always an absolute normalized
 command: `0` is closed and `1` is open.
 
-| Model | Policy initialization | Predicted action | Robot-side interpretation |
-|---|---|---|---|
-| [`MolmoAct2-BimanualYAM-long-gripper182-ee20`](https://huggingface.co/ASethi04/MolmoAct2-BimanualYAM-long-gripper182-ee20) | `allenai/MolmoAct2-BimanualYAM@8dcbed66f2380e4393189c303ea72488eb9e63c2` | 24x20 query-relative EE rows | Decode each arm's target in its measured query frame, then run independent I2RT IK. |
-| [`pi05-BimanualYAM-long-gripper182-ee20`](https://huggingface.co/ASethi04/pi05-BimanualYAM-long-gripper182-ee20) | `lerobot/pi05_base@b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba` | 24x20 query-relative EE rows | Same EE decoder and I2RT IK as MolmoAct2. |
-| [`MolmoAct2-BimanualYAM-long-gripper182-joint14`](https://huggingface.co/ASethi04/MolmoAct2-BimanualYAM-long-gripper182-joint14) | `allenai/MolmoAct2-BimanualYAM@8dcbed66f2380e4393189c303ea72488eb9e63c2` | 24x14 absolute joint rows | Validate and send directly in BiYAM driver order; no online IK. |
-| [`pi05-BimanualYAM-long-gripper182-joint14`](https://huggingface.co/ASethi04/pi05-BimanualYAM-long-gripper182-joint14) | `lerobot/pi05_base@b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba` | 24x14 absolute joint rows | Validate and send directly in BiYAM driver order; no online IK. |
+| Model | Immutable revision | Policy initialization | Predicted action | Robot-side interpretation |
+|---|---|---|---|---|
+| [`MolmoAct2-BimanualYAM-long-gripper182-ee20`](https://huggingface.co/ASethi04/MolmoAct2-BimanualYAM-long-gripper182-ee20) | `4b8761be7134a344cc53e222a2aee71c4edb518f` | `allenai/MolmoAct2-BimanualYAM@8dcbed66f2380e4393189c303ea72488eb9e63c2` | 24x20 query-relative EE rows | Decode each arm's target in its measured query frame, then run independent I2RT IK. |
+| [`pi05-BimanualYAM-long-gripper182-ee20`](https://huggingface.co/ASethi04/pi05-BimanualYAM-long-gripper182-ee20) | `8a42009ff0b7915f0165b01c98cda5cd859f0b71` | `lerobot/pi05_base@b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba` | 24x20 query-relative EE rows | Same EE decoder and I2RT IK as MolmoAct2. |
+| [`MolmoAct2-BimanualYAM-long-gripper182-joint14`](https://huggingface.co/ASethi04/MolmoAct2-BimanualYAM-long-gripper182-joint14) | `d3bce51559483a88e4348d15f527a681f03d08e6` | `allenai/MolmoAct2-BimanualYAM@8dcbed66f2380e4393189c303ea72488eb9e63c2` | 24x14 absolute joint rows | Validate and send directly in BiYAM driver order; no online IK. |
+| [`pi05-BimanualYAM-long-gripper182-joint14`](https://huggingface.co/ASethi04/pi05-BimanualYAM-long-gripper182-joint14) | `fe70f1158f2fdf9d2b68338b83a28a96ad207dca` | `lerobot/pi05_base@b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba` | 24x14 absolute joint rows | Validate and send directly in BiYAM driver order; no online IK. |
 
-The model repositories are created before training finishes, but a checkpoint
-is not deployable until its exact 12,000-step artifact and immutable revision
-are listed there.
+All four rows above are exact 12,000-step artifacts. Each immutable revision
+passed a clean-cache policy-server load and gRPC inference check before being
+listed here.
 
 ### EE20 actions
 
@@ -95,6 +95,16 @@ one sample, so the 24 outputs correspond to physical targets `t+1..t+24`.
 Inference performs no FK-to-IK conversion: it validates the predicted absolute
 row and passes it to the BiYAM driver, which still applies its configured
 per-tick rate limits.
+
+An offline training-set replay sampled 32 evenly spaced episode midpoints. Both
+EE20 models passed the row-one I2RT joint-motion gate on all 64 arm queries.
+MolmoAct2 Joint14 required the configured driver rate limiter on four samples,
+including two large right-arm steps. Pi0.5 Joint14 had no row-one joint-step
+violation, but six samples crossed an exact static bound (five tiny gripper
+overshoots and one `-0.0116`-rad joint-limit crossing) and are rejected
+fail-closed before dispatch; three additional gripper steps require rate
+limiting. This replay is not held-out or physical-hardware validation. Run the
+no-motion probe below and inspect rejected or bounded actions before arming.
 
 MolmoAct2 trains its continuous action head and discrete-action auxiliary
 objective together (`action_mode=both`), but hardware inference uses only its
@@ -130,12 +140,35 @@ uv run lerobot-policy-server \
 ```
 
 The four long-gripper checkpoints carry their policy configuration,
-normalization, camera order, and tokenizer revisions. Use the same command for
-either policy family, pinning the model to its published immutable commit:
+normalization, camera order, and tokenizer revisions. Select one exact profile:
 
 ```bash
-MODEL_ID=<one-model-id-from-the-table-above>
-MODEL_REVISION=<immutable-published-commit-sha>
+PROFILE=molmo-ee20  # choose molmo-ee20, pi05-ee20, molmo-joint14, or pi05-joint14
+case "$PROFILE" in
+  molmo-ee20)
+    MODEL_ID=ASethi04/MolmoAct2-BimanualYAM-long-gripper182-ee20
+    MODEL_REVISION=4b8761be7134a344cc53e222a2aee71c4edb518f
+    ACTION_MODE=ee ;;
+  pi05-ee20)
+    MODEL_ID=ASethi04/pi05-BimanualYAM-long-gripper182-ee20
+    MODEL_REVISION=8a42009ff0b7915f0165b01c98cda5cd859f0b71
+    ACTION_MODE=ee ;;
+  molmo-joint14)
+    MODEL_ID=ASethi04/MolmoAct2-BimanualYAM-long-gripper182-joint14
+    MODEL_REVISION=d3bce51559483a88e4348d15f527a681f03d08e6
+    ACTION_MODE=joint ;;
+  pi05-joint14)
+    MODEL_ID=ASethi04/pi05-BimanualYAM-long-gripper182-joint14
+    MODEL_REVISION=fe70f1158f2fdf9d2b68338b83a28a96ad207dca
+    ACTION_MODE=joint ;;
+  *) echo "unknown PROFILE=$PROFILE" >&2; exit 2 ;;
+esac
+```
+
+Use the same server command for either policy family, pinning the model to the
+selected immutable commit:
+
+```bash
 uv run lerobot-policy-server \
     --policy.pretrained_name_or_path="$MODEL_ID" \
     --policy.revision="$MODEL_REVISION" \
@@ -224,9 +257,8 @@ installation once per shell on the robot computer:
 
 ```bash
 SERVER=<reachable-server-ip>:8081
-MODEL_ID=<served-checkpoint-id>
 TASK="pick up oranges and place them in the bowl"
-ACTION_MODE=<joint-or-ee>
+# Keep MODEL_ID and ACTION_MODE from the selected PROFILE above.
 EXECUTION_HORIZON=1
 ROBOT_ID=<robot-id>
 LEFT_CAN=<left-can-adapter-serial>
