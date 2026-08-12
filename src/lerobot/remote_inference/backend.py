@@ -167,13 +167,17 @@ class LeRobotPolicyBackend(PolicyBackend):
             self._policy = policy_class.from_pretrained(
                 config.pretrained_name_or_path,
                 config=self._policy_config,
-                revision=self._policy_config.pretrained_revision,
+                revision=config.revision,
             )
         self._policy.to(self._device).eval()
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy_config,
             pretrained_path=None if config.policy_type == "molmoact2" else config.pretrained_name_or_path,
-            pretrained_revision=self._policy_config.pretrained_revision,
+            pretrained_revision=(
+                self._policy_config.pretrained_revision
+                if config.policy_type == "molmoact2"
+                else config.revision
+            ),
             dataset_stats=self._dataset_stats,
         )
         self._manifest = self._build_manifest()
