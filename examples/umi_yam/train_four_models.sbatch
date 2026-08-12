@@ -44,10 +44,17 @@ readonly EE_REVISION="a29ae6a5531584fb950c7bb3bb5895f18421b108"
 readonly JOINT_REPO="ASethi04/dual-lidar-combined-filtered-joint-positions-long-gripper-trainable"
 readonly DEFAULT_EE_CACHE_ROOT="/n/netscratch/ydu_lab/Lab/asethi/umi-yam-data/dual-lidar-combined-filtered-long-gripper-ee20-h24-cache"
 readonly DEFAULT_JOINT_ROOT="/n/netscratch/ydu_lab/Lab/asethi/umi-yam-data/dual-lidar-combined-filtered-joint-positions-long-gripper-trainable"
-readonly WORLD_SIZE=16
-readonly GPUS_PER_NODE=8
-readonly PER_RANK_BATCH=4
 readonly ACTION_HORIZON=24
+
+TOPOLOGY=${UMI_YAM_TOPOLOGY:-2x8}
+case "$TOPOLOGY" in
+  2x8) NODES=2; GPUS_PER_NODE=8; WORLD_SIZE=16; PER_RANK_BATCH=4; CPUS_PER_NODE=96; EXPECTED_PARTITION=kempner_requeue ;;
+  4x4) NODES=4; GPUS_PER_NODE=4; WORLD_SIZE=16; PER_RANK_BATCH=4; CPUS_PER_NODE=64; EXPECTED_PARTITION=kempner_requeue ;;
+  2x4) NODES=2; GPUS_PER_NODE=4; WORLD_SIZE=8;  PER_RANK_BATCH=8; CPUS_PER_NODE=64; EXPECTED_PARTITION=kempner_requeue ;;
+  protected1x4) NODES=1; GPUS_PER_NODE=4; WORLD_SIZE=4; PER_RANK_BATCH=16; CPUS_PER_NODE=48; EXPECTED_PARTITION=kempner_rtx ;;
+  *) echo "unsupported UMI_YAM_TOPOLOGY=$TOPOLOGY" >&2; exit 2 ;;
+esac
+readonly TOPOLOGY NODES GPUS_PER_NODE WORLD_SIZE PER_RANK_BATCH CPUS_PER_NODE EXPECTED_PARTITION
 
 case "$UMI_YAM_PROFILE" in
   molmoact2-ee20)    MODEL=molmoact2; DATA_KIND=ee;    ACTION_DIM=20; DROP_LAST=0 ;;
@@ -106,31 +113,34 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
 export HF_HOME=${UMI_YAM_HF_HOME:-/n/holylabs/kempner_ydu_lab/Lab/asethi/hf-cache}
+export EXPECTED_WORLD_SIZE=$WORLD_SIZE EXPECTED_PER_RANK_BATCH=$PER_RANK_BATCH
 
 mapfile -t ALLOCATED_HOSTS < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
-[[ ${SLURM_JOB_NUM_NODES:-0} == 2 && ${SLURM_NTASKS:-0} == 2 ]]
-[[ ${#ALLOCATED_HOSTS[@]} == 2 && ${ALLOCATED_HOSTS[0]} != "${ALLOCATED_HOSTS[1]}" ]]
+[[ ${SLURM_JOB_NUM_NODES:-0} == "$NODES" && ${SLURM_NTASKS:-0} == "$NODES" ]]
+[[ ${#ALLOCATED_HOSTS[@]} == "$NODES" ]]
+[[ $(printf '%s\n' "${ALLOCATED_HOSTS[@]}" | sort -u | awk 'END {print NR}') == "$NODES" ]]
 JOB_DESCRIPTION=$(scontrol show job -d -o "$SLURM_JOB_ID")
 grep -Eq '(^|[[:space:]])QOS=normal([[:space:]]|$)' <<< "$JOB_DESCRIPTION"
-grep -Eq 'gres/gpu=16([,[:space:]]|$)' <<< "$JOB_DESCRIPTION"
-grep -Fq 'TresPerNode=gres/gpu:nvidia_rtx_pro_6000_blackwell_server_edition:8' \
+grep -Fq "Partition=$EXPECTED_PARTITION" <<< "$JOB_DESCRIPTION"
+grep -Eq "gres/gpu=$WORLD_SIZE([,[:space:]]|$)" <<< "$JOB_DESCRIPTION"
+grep -Fq "TresPerNode=gres/gpu:nvidia_rtx_pro_6000_blackwell_server_edition:$GPUS_PER_NODE" \
   <<< "$JOB_DESCRIPTION"
 
 mapfile -t GPU_REPORT < <(
-  srun --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task=96 --exact bash -c \
+  srun --nodes="$NODES" --ntasks="$NODES" --ntasks-per-node=1 --cpus-per-task="$CPUS_PER_NODE" --exact bash -c \
     'printf "%s\t%s\n" "$(hostname -s)" "$(nvidia-smi --query-gpu=uuid --format=csv,noheader | wc -l)"'
 )
-[[ ${#GPU_REPORT[@]} == 2 ]]
+[[ ${#GPU_REPORT[@]} == "$NODES" ]]
 declare -A GPU_HOSTS=()
 TOTAL_GPUS=0
 for row in "${GPU_REPORT[@]}"; do
   read -r host count <<< "$row"
-  [[ $count == 8 ]]
+  [[ $count == "$GPUS_PER_NODE" ]]
   GPU_HOSTS[$host]=1
   TOTAL_GPUS=$((TOTAL_GPUS + count))
 done
-[[ ${#GPU_HOSTS[@]} == 2 && $TOTAL_GPUS == 16 ]]
-echo "ALLOCATION_OK qos=normal nodes=2 supervisors=2 gpus_per_node=8 total_gpus=16"
+[[ ${#GPU_HOSTS[@]} == "$NODES" && $TOTAL_GPUS == "$WORLD_SIZE" ]]
+echo "ALLOCATION_OK topology=$TOPOLOGY partition=$EXPECTED_PARTITION qos=normal nodes=$NODES supervisors=$NODES gpus_per_node=$GPUS_PER_NODE total_gpus=$WORLD_SIZE"
 
 PAYLOAD_MANIFEST=$PAYLOAD_ROOT/meta/payload.sha256
 [[ -f $PAYLOAD_MANIFEST && ! -L $PAYLOAD_MANIFEST ]]
@@ -352,7 +362,7 @@ fi
 TRAIN_ARGS=(
   "${SOURCE_ARGS[@]}"
   "${DATASET_ARGS[@]}"
-  --batch_size=4
+  --batch_size="$PER_RANK_BATCH"
   --seed=1000
   --num_workers=8
   --dataloader_multiprocessing_context=spawn
@@ -379,10 +389,10 @@ MASTER_PORT=$((29000 + SLURM_JOB_ID % 1000))
 MIXED_PRECISION=no
 [[ $MODEL == molmoact2 ]] && MIXED_PRECISION=bf16
 export MASTER_ADDR MASTER_PORT MIXED_PRECISION CODE_ROOT VENV
-echo "PROFILE_OK profile=$UMI_YAM_PROFILE model=$MODEL action_dim=$ACTION_DIM horizon=24 drop_last=$DROP_LAST global_batch=64 task=$TASK"
+echo "PROFILE_OK profile=$UMI_YAM_PROFILE model=$MODEL topology=$TOPOLOGY action_dim=$ACTION_DIM horizon=24 drop_last=$DROP_LAST global_batch=64 task=$TASK"
 
 if [[ ${UMI_YAM_DRY_RUN:-0} == 1 ]]; then
-  printf 'DRY_RUN_OK command: accelerate launch --multi_gpu --num_machines=2 --num_processes=16 '
+  printf 'DRY_RUN_OK command: accelerate launch --multi_gpu --num_machines=%s --num_processes=%s ' "$NODES" "$WORLD_SIZE"
   printf '%q ' --machine_rank='${SLURM_PROCID}' --main_process_ip="$MASTER_ADDR" \
     --main_process_port="$MASTER_PORT" --same_network --mixed_precision="$MIXED_PRECISION" \
     --dynamo_backend=no -m lerobot.scripts.lerobot_train "${TRAIN_ARGS[@]}"
@@ -394,13 +404,15 @@ mkdir -p "$RUN_ROOT/$UMI_YAM_RUN_ID" "$RUN_ROOT/wandb" "$HF_HOME"
 export WANDB_DIR=$RUN_ROOT/wandb
 export WANDB_MODE=$WANDB_RUN_MODE
 export UMI_YAM_CODE_ROOT=$CODE_ROOT UMI_YAM_VENV=$VENV
+export UMI_YAM_NODES=$NODES UMI_YAM_WORLD_SIZE=$WORLD_SIZE
+export UMI_YAM_GPUS_PER_NODE=$GPUS_PER_NODE UMI_YAM_CPUS_PER_NODE=$CPUS_PER_NODE
 
-srun --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task=96 --exact --kill-on-bad-exit=1 \
+srun --nodes="$NODES" --ntasks="$NODES" --ntasks-per-node=1 --cpus-per-task="$CPUS_PER_NODE" --exact --kill-on-bad-exit=1 \
   bash -c '
     set -euo pipefail
-    [[ $(nvidia-smi --query-gpu=uuid --format=csv,noheader | wc -l) == 8 ]]
+    [[ $(nvidia-smi --query-gpu=uuid --format=csv,noheader | wc -l) == "$UMI_YAM_GPUS_PER_NODE" ]]
     exec "$UMI_YAM_VENV/bin/accelerate" launch \
-      --multi_gpu --num_machines=2 --num_processes=16 \
+      --multi_gpu --num_machines="$UMI_YAM_NODES" --num_processes="$UMI_YAM_WORLD_SIZE" \
       --machine_rank="$SLURM_PROCID" \
       --main_process_ip="$MASTER_ADDR" --main_process_port="$MASTER_PORT" \
       --same_network --mixed_precision="$MIXED_PRECISION" --dynamo_backend=no \

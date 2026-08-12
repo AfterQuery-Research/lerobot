@@ -155,7 +155,9 @@ def _checkpoint_config(checkpoint: Path, *, incomplete_ok: bool) -> Path | None:
     if not all(_regular(path) for path in required):
         raise RuntimeError(f"malformed processor state in {checkpoint}")
     state = json.loads((state_dir / "training_step.json").read_text())
-    if state != {"step": step, "num_processes": 16, "batch_size": 4}:
+    expected_world = int(os.environ.get("EXPECTED_WORLD_SIZE", "16"))
+    expected_batch = int(os.environ.get("EXPECTED_PER_RANK_BATCH", "4"))
+    if state != {"step": step, "num_processes": expected_world, "batch_size": expected_batch}:
         raise RuntimeError(f"invalid training state in {checkpoint}: {state}")
     return pretrained / "train_config.json"
 
@@ -170,7 +172,8 @@ def _validate_train_config(config_path: Path, run_dir: Path) -> int:
     cfg = json.loads(config_path.read_text())
     assert Path(cfg["output_dir"]).resolve() == run_dir.resolve()
     assert cfg["job_name"] == f"umi-yam-{profile}-{os.environ['UMI_YAM_RUN_ID']}"
-    assert (cfg["batch_size"], cfg["seed"], cfg["steps"]) == (4, 1000, 12_000)
+    expected_batch = int(os.environ.get("EXPECTED_PER_RANK_BATCH", "4"))
+    assert (cfg["batch_size"], cfg["seed"], cfg["steps"]) == (expected_batch, 1000, 12_000)
     assert (cfg["save_freq"], cfg["eval_steps"]) == (1000, 0)
     assert cfg["dataset"]["repo_id"] == os.environ["DATA_REPO"]
     assert cfg["dataset"]["drop_n_last_frames"] == (0 if dimension == 20 else 24)
