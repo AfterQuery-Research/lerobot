@@ -2,7 +2,7 @@
 
 `train_four_models.sbatch` is the only launcher. Its four profiles share the exact task
 `pick up oranges and place them in the bowl`, horizon 24, seed 1000, 12,000 optimizer steps,
-per-rank batch 4 (global batch 64), and checkpoints every 1,000 steps.
+global batch 64, and checkpoints every 1,000 steps. The selected topology sets the per-rank batch.
 
 | Profile | Action | Dataset tail |
 | --- | --- | --- |
@@ -10,6 +10,19 @@ per-rank batch 4 (global batch 64), and checkpoints every 1,000 steps.
 | `pi05-ee20` | same 20-D EE contract | same |
 | `molmoact2-joint14` | published I2RT `7ed46f4` 220 mm-grasp joint positions, 14-D | launcher requires `drop_n_last_frames=24` |
 | `pi05-joint14` | same published 14-D joint contract | same |
+
+Supported allocations preserve the same global batch and optimizer-step contract:
+
+| `UMI_YAM_TOPOLOGY` | Allocation | Batch/rank | Partition |
+| --- | --- | --- | --- |
+| `2x8` (default) | 2 nodes × 8 GPUs | 4 | `kempner_requeue` |
+| `4x4` | 4 nodes × 4 GPUs | 4 | `kempner_requeue` |
+| `2x4` | 2 nodes × 4 GPUs | 8 | `kempner_requeue` |
+| `protected1x4` | 1 node × 4 GPUs | 16 | `kempner_rtx` |
+
+The Slurm request and `UMI_YAM_TOPOLOGY` must agree; the launcher verifies both before touching model
+state. Keep the same topology when resuming because checkpoint validation pins world size and per-rank
+batch. Use `protected1x4` only when the protected four-GPU allocation has been explicitly coordinated.
 
 Model pins are MolmoAct2 `8dcbed66f2380e4393189c303ea72488eb9e63c2`, FAST tokenizer
 `d45593b4c863d0bc1ca064f8b352fa16b75c38e8`, and Pi0.5
@@ -110,7 +123,7 @@ sbatch --test-only examples/umi_yam/train_four_models.sbatch
 ```
 
 Run one allocated dry-run per data kind. Each checks one semantic sample, provenance, QOS `normal`,
-two nodes, and 16 visible typed GPUs, then exits before model loading.
+the selected topology, and every visible typed GPU, then exits before model loading.
 
 ```bash
 export UMI_YAM_PROFILE=molmoact2-ee20
@@ -123,7 +136,28 @@ sbatch --export=ALL,UMI_YAM_DRY_RUN=1 examples/umi_yam/train_four_models.sbatch
 ```
 
 After both dry-runs print `ALLOCATION_OK`, `DATASET_OK`, `PROFILE_OK`, and `DRY_RUN_OK`, submit the
-four exact profiles with the corresponding manifest hash:
+four exact profiles with the corresponding manifest hash. The commands below use the default `2x8`;
+for fragmented capacity, override the request and topology together, for example:
+
+```bash
+# 4 nodes × 4 GPUs, still world size 16 and batch 64.
+sbatch --nodes=4 --gres=gpu:nvidia_rtx_pro_6000_blackwell_server_edition:4 \
+  --cpus-per-task=64 --export=ALL,UMI_YAM_TOPOLOGY=4x4 \
+  examples/umi_yam/train_four_models.sbatch
+
+# 2 nodes × 4 GPUs, world size 8 with batch 8/rank.
+sbatch --nodes=2 --gres=gpu:nvidia_rtx_pro_6000_blackwell_server_edition:4 \
+  --cpus-per-task=64 --export=ALL,UMI_YAM_TOPOLOGY=2x4 \
+  examples/umi_yam/train_four_models.sbatch
+
+# Coordinated protected allocation. Pi0.5 batch 16/rank is validated on RTX Pro 6000.
+sbatch --partition=kempner_rtx --nodes=1 \
+  --gres=gpu:nvidia_rtx_pro_6000_blackwell_server_edition:4 --cpus-per-task=48 \
+  --time=24:00:00 --export=ALL,UMI_YAM_TOPOLOGY=protected1x4 \
+  examples/umi_yam/train_four_models.sbatch
+```
+
+Default `2x8` submissions:
 
 ```bash
 unset UMI_YAM_DRY_RUN UMI_YAM_RESUME_CONFIG
@@ -150,6 +184,6 @@ export UMI_YAM_RESUME_CONFIG="$UMI_YAM_RUN_ROOT/$UMI_YAM_RUN_ID/$UMI_YAM_PROFILE
 sbatch --export=ALL examples/umi_yam/train_four_models.sbatch
 ```
 
-Never point two jobs at the same profile output directory. Do not use `kempner`, `kempner_rtx`,
-`kempner_h100`, or `kempner_h200`; the launcher is fixed to `kempner_requeue` and the exact typed RTX
-Pro 6000 request.
+Never point two jobs at the same profile output directory. Except for the explicitly coordinated
+`protected1x4` mode, use `kempner_requeue`. Do not use `kempner`, `kempner_h100`, or `kempner_h200`;
+all modes require the exact typed RTX Pro 6000 request.
