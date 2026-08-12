@@ -46,6 +46,11 @@ class DatasetConfig:
     streaming: bool = False
     # Fraction of episodes held out per task for offline evaluation (0.0 = disabled).
     eval_split: float = 0.0
+    # Optional dataset-specific tail exclusion. When unset, policy defaults still apply.
+    drop_n_last_frames: int | None = None
+    # Explicit opt-in for the pinned UMI-to-YAM 20-D EE training view.
+    umi_yam_ee: bool = False
+    umi_yam_ee_cache_root: str | None = None
 
     def __post_init__(self) -> None:
         if self.depth_output_unit not in (DEPTH_METER_UNIT, DEPTH_MILLIMETER_UNIT):
@@ -54,6 +59,8 @@ class DatasetConfig:
             )
         if not (0.0 <= self.eval_split < 1.0):
             raise ValueError(f"eval_split must be in [0.0, 1.0), got {self.eval_split}")
+        if self.drop_n_last_frames is not None and self.drop_n_last_frames < 0:
+            raise ValueError("drop_n_last_frames must be non-negative")
         if self.episodes is not None:
             if any(ep < 0 for ep in self.episodes):
                 raise ValueError(

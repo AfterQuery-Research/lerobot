@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import draccus
 import pytest
@@ -25,7 +27,11 @@ from lerobot.configs.train import TrainPipelineConfig  # noqa: E402
 from lerobot.policies.act.configuration_act import (
     ACTConfig,  # noqa: E402, F401  (registers --policy.type act)
 )
-from lerobot.scripts.lerobot_train import _remote_target_in_argv, train  # noqa: E402
+from lerobot.scripts.lerobot_train import (  # noqa: E402
+    _remote_target_in_argv,
+    _synchronize_fresh_output_dir,
+    train,
+)
 
 
 def _set_argv(monkeypatch, *args):
@@ -65,3 +71,21 @@ def test_train_dispatches_to_submit_when_remote(monkeypatch):
     # Returns the submitter's result and never enters the local training path.
     assert train(cfg) == "submitted"
     assert captured == [cfg]
+
+
+def test_fresh_output_check_runs_on_each_rank_before_the_barrier():
+    events = []
+
+    def check(rank, *, exists=False):
+        output_dir, accelerator = Mock(), Mock()
+        output_dir.is_dir.side_effect = lambda: events.append((rank, "check")) or exists
+        accelerator.wait_for_everyone.side_effect = lambda: events.append((rank, "barrier"))
+        _synchronize_fresh_output_dir(SimpleNamespace(resume=False, output_dir=output_dir), accelerator)
+
+    for rank in (0, 1):
+        check(rank)
+    assert events == [(0, "check"), (0, "barrier"), (1, "check"), (1, "barrier")]
+
+    with pytest.raises(FileExistsError):
+        check(1, exists=True)
+    assert events[-2:] == [(1, "check"), (1, "barrier")]

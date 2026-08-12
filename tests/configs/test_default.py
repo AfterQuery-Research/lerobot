@@ -36,3 +36,8 @@ def test_dataset_config_none_episodes_ok():
 
 def test_dataset_config_empty_episodes_ok():
     DatasetConfig(repo_id="user/repo", episodes=[])
+
+
+def test_dataset_config_rejects_negative_tail_drop():
+    with pytest.raises(ValueError, match="drop_n_last_frames"):
+        DatasetConfig(repo_id="user/repo", drop_n_last_frames=-1)

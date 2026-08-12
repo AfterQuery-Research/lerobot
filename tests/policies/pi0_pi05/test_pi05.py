@@ -16,6 +16,8 @@
 
 """Test script to verify PI0.5 (pi05) support in PI0 policy"""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -29,6 +31,32 @@ from lerobot.policies.pi05 import (  # noqa: E402
 )
 from lerobot.utils.random_utils import set_seed
 from tests.utils import require_cuda, require_hf_token  # noqa: E402
+
+
+def test_preprocess_images_preserves_configured_slots_when_leading_camera_is_missing():
+    policy = PI05Policy.__new__(PI05Policy)
+    torch.nn.Module.__init__(policy)
+    policy.register_parameter("device_anchor", torch.nn.Parameter(torch.zeros(())))
+    policy.config = SimpleNamespace(
+        image_features={
+            "observation.images.base": object(),
+            "observation.images.left": object(),
+            "observation.images.right": object(),
+        },
+        image_resolution=(2, 2),
+    )
+    batch = {
+        "observation.images.left": torch.full((1, 3, 2, 2), 0.25),
+        "observation.images.right": torch.full((1, 3, 2, 2), 0.75),
+    }
+
+    images, masks = policy._preprocess_images(batch)
+
+    assert len(images) == 3
+    torch.testing.assert_close(images[0], torch.full_like(images[0], -1.0))
+    torch.testing.assert_close(images[1], torch.full_like(images[1], -0.5))
+    torch.testing.assert_close(images[2], torch.full_like(images[2], 0.5))
+    assert [mask.tolist() for mask in masks] == [[False], [True], [True]]
 
 
 @require_cuda

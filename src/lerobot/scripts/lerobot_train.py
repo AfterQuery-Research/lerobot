@@ -114,6 +114,18 @@ def _dataloader_worker_kwargs(cfg: TrainPipelineConfig) -> dict[str, Any]:
     }
 
 
+def _synchronize_fresh_output_dir(cfg: TrainPipelineConfig, accelerator: "Accelerator") -> None:
+    """Check every rank before any rank may create a fresh run directory."""
+
+    output_exists = not cfg.resume and cfg.output_dir is not None and cfg.output_dir.is_dir()
+    accelerator.wait_for_everyone()
+    if output_exists:
+        raise FileExistsError(
+            f"Output directory {cfg.output_dir} already exists and resume is {cfg.resume}. "
+            f"Please change your output directory so that {cfg.output_dir} is not overwritten."
+        )
+
+
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy,
@@ -273,6 +285,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             cpu=force_cpu,
         )
 
+    _synchronize_fresh_output_dir(cfg, accelerator)
     init_logging(accelerator=accelerator)
 
     # Determine if this is the main process (for logging and checkpointing)
@@ -474,11 +487,14 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         # same permutation. accelerate then shards it disjointly across ranks via BatchSamplerShard
         # without needing a `generator` attribute to synchronize an RNG, and resume is sample-exact.
         shuffle = False
+        drop_n_last_frames = cfg.dataset.drop_n_last_frames
+        if drop_n_last_frames is None:
+            drop_n_last_frames = getattr(active_cfg, "drop_n_last_frames", 0)
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
             dataset.meta.episodes["dataset_to_index"],
             episode_indices_to_use=dataset.episodes,
-            drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
+            drop_n_last_frames=drop_n_last_frames,
             shuffle=True,
             seed=cfg.seed if cfg.seed is not None else 0,
             absolute_to_relative_idx=dataset.absolute_to_relative_idx,

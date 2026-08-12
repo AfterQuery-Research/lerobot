@@ -29,6 +29,12 @@ from .dataset_metadata import LeRobotDatasetMetadata
 from .lerobot_dataset import LeRobotDataset
 from .multi_dataset import MultiLeRobotDataset
 from .streaming_dataset import StreamingLeRobotDataset
+from .umi_yam import ACTION_HORIZON
+from .umi_yam_ee_dataset import (
+    SOURCE_REPO_ID,
+    SOURCE_REVISION,
+    UMIYAMEEDataset,
+)
 
 
 def resolve_delta_timestamps(
@@ -66,7 +72,44 @@ def resolve_delta_timestamps(
     return delta_timestamps
 
 
-def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
+def _make_umi_yam_ee_dataset(cfg: TrainPipelineConfig, image_transforms: ImageTransforms | None):
+    ds_cfg = cfg.dataset
+    expected, actual = (SOURCE_REPO_ID, SOURCE_REVISION), (ds_cfg.repo_id, ds_cfg.revision)
+    if actual != expected:
+        raise ValueError(f"dataset.umi_yam_ee requires pinned source {expected}, got {actual}")
+    if ds_cfg.streaming or ds_cfg.episodes is not None or ds_cfg.eval_split != 0:
+        raise ValueError("dataset.umi_yam_ee requires streaming=false, episodes=null, and eval_split=0")
+    if not ds_cfg.umi_yam_ee_cache_root:
+        raise ValueError("dataset.umi_yam_ee_cache_root is required and must be shared across ranks/nodes")
+    if ds_cfg.drop_n_last_frames not in (None, 0):
+        raise ValueError(
+            "dataset.umi_yam_ee already excludes its final 24 targets; drop_n_last_frames must be 0"
+        )
+    if getattr(cfg.trainable_config, "chunk_size", None) != ACTION_HORIZON:
+        raise ValueError(f"dataset.umi_yam_ee requires policy.chunk_size={ACTION_HORIZON}")
+    n_action_steps = getattr(cfg.trainable_config, "n_action_steps", None)
+    if n_action_steps is not None and n_action_steps != ACTION_HORIZON:
+        raise ValueError(f"dataset.umi_yam_ee requires policy.n_action_steps={ACTION_HORIZON}")
+    ds_cfg.drop_n_last_frames = 0
+
+    source = LeRobotDataset(
+        SOURCE_REPO_ID,
+        root=ds_cfg.root,
+        delta_timestamps=None,
+        image_transforms=image_transforms,
+        revision=SOURCE_REVISION,
+        video_backend=ds_cfg.video_backend,
+        return_uint8=True,
+        depth_output_unit=ds_cfg.depth_output_unit,
+        tolerance_s=cfg.tolerance_s,
+    )
+    # The sidecar is an immutable, prebuilt artifact shared by all ranks. Never
+    # materialize it here: a missing or invalid cache must fail closed instead
+    # of allowing distributed workers to race as concurrent writers.
+    return UMIYAMEEDataset(source, ds_cfg.umi_yam_ee_cache_root)
+
+
+def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset | UMIYAMEEDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
     Args:
@@ -82,7 +125,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
     )
 
-    if isinstance(cfg.dataset.repo_id, str):
+    if cfg.dataset.umi_yam_ee:
+        dataset = _make_umi_yam_ee_dataset(cfg, image_transforms)
+    elif isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
@@ -138,7 +183,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
 def make_train_eval_datasets(
     cfg: TrainPipelineConfig,
-) -> tuple[LeRobotDataset | MultiLeRobotDataset, LeRobotDataset | None]:
+) -> tuple[LeRobotDataset | MultiLeRobotDataset | UMIYAMEEDataset, LeRobotDataset | None]:
     """Create train and optional eval datasets by splitting episodes based on eval_split.
 
     The last ceil(n_episodes * eval_split) episodes per task are held out for evaluation.
