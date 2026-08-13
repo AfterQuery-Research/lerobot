@@ -144,6 +144,15 @@ class LeRobotPolicyBackendConfig:
     model_dtype: str | None = None
     norm_tag: str | None = None
     inference_action_mode: str | None = None
+    # Some min/max-normalized policies can predict slightly outside their
+    # trained [-1, 1] action support. Clamp before inverse normalization.
+    clamp_normalized_actions: bool = False
+
+
+def _clamp_normalized_action_chunk(chunk: torch.Tensor) -> tuple[torch.Tensor, int]:
+    out_of_range = torch.isfinite(chunk) & ((chunk < -1.0) | (chunk > 1.0))
+    count = int(torch.count_nonzero(out_of_range).item())
+    return torch.clamp(chunk, min=-1.0, max=1.0), count
 
 
 class LeRobotPolicyBackend(PolicyBackend):
@@ -153,6 +162,7 @@ class LeRobotPolicyBackend(PolicyBackend):
         self._config = config
         self._device = torch.device(config.device)
         self._lock = threading.Lock()
+        self._last_action_clamp_log_s = float("-inf")
         self._prepared_input: tuple[tuple[tuple[str, int, int], ...], str] | None = None
         self._policy_config = self._load_policy_config(config)
         self._dataset_stats = None
@@ -432,6 +442,20 @@ class LeRobotPolicyBackend(PolicyBackend):
             chunk = self._policy.predict_action_chunk(batch)
             if chunk.ndim == 2:
                 chunk = chunk.unsqueeze(0)
+            if self._config.clamp_normalized_actions:
+                unclamped_min = float(torch.amin(chunk).item())
+                unclamped_max = float(torch.amax(chunk).item())
+                chunk, clamped_values = _clamp_normalized_action_chunk(chunk)
+                now_s = time.monotonic()
+                if clamped_values and now_s - self._last_action_clamp_log_s >= 5.0:
+                    logger.warning(
+                        "Clamped %d normalized policy action values to [-1, 1] "
+                        "(unclamped range [%.6f, %.6f])",
+                        clamped_values,
+                        unclamped_min,
+                        unclamped_max,
+                    )
+                    self._last_action_clamp_log_s = now_s
             processed = [self._postprocessor(chunk[:, index, :]) for index in range(chunk.shape[1])]
             actions = torch.stack(processed, dim=1).squeeze(0).detach().cpu().float().numpy()
         actions = actions[: self._manifest.action_horizon, : self._manifest.action_dim]

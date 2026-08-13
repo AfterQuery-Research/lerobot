@@ -91,6 +91,9 @@ class RemoteInferenceConfig(InferenceEngineConfig):
     image_encoding: str = "jpeg"
     # One row per prediction is the safe default for physical deployment.
     execution_horizon: int = 1
+    # Execute a bounded chunk, hold its final command during the next inference,
+    # then start the next chunk from a fresh measured observation.
+    sequential_chunk_execution: bool = False
     bi_yam_action_mode: Literal["joint", "ee"] | None = None
     tls_root_cert_path: str | None = None
     tls_client_cert_path: str | None = None
@@ -179,6 +182,7 @@ def create_inference_engine(
                 tls_client_key_path=config.tls_client_key_path,
                 tls_server_name_override=config.tls_server_name_override,
                 execution_horizon=config.execution_horizon,
+                sequential_chunk_execution=config.sequential_chunk_execution,
                 image_encoding=parse_image_encoding(config.image_encoding),
                 camera_calibration_sha256=dict(config.camera_calibration_sha256),
             ),

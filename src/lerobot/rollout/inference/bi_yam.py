@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
@@ -24,10 +25,18 @@ from lerobot.robots.bi_yam.kinematics import I2RT_YAM_JOINT_LIMITS, I2RTYAMKinem
 
 from .umi_yam import decode_bimanual_action, encode_bimanual_action
 
+logger = logging.getLogger(__name__)
+
 BiYAMActionMode = Literal["joint", "ee"]
 
 _ARM_FEATURES = ("x", "y", "z", "r0x", "r0y", "r0z", "r1x", "r1y", "r1z", "gripper")
 EE_FEATURE_NAMES = tuple(f"{side}_{name}" for side in ("left", "right") for name in _ARM_FEATURES)
+
+# The I2RT linear_4310 gripper defines a 96 mm full stroke. Treat the requested
+# 85 mm policy opening as model-space 1.0 in both observation and action paths.
+_YAM_GRIPPER_FULL_STROKE_M = 0.096
+_POLICY_GRIPPER_MAX_WIDTH_M = 0.085
+_POLICY_TO_HARDWARE_GRIPPER_SCALE = _POLICY_GRIPPER_MAX_WIDTH_M / _YAM_GRIPPER_FULL_STROKE_M
 
 
 class _Kinematics(Protocol):
@@ -136,9 +145,9 @@ class BiYAMActionAdapter:
         identity = np.eye(4, dtype=np.float64)
         model_state = encode_bimanual_action(
             left_delta_transform=identity,
-            left_gripper=np.asarray(current[6]),
+            left_gripper=np.asarray(np.clip(current[6] / _POLICY_TO_HARDWARE_GRIPPER_SCALE, 0.0, 1.0)),
             right_delta_transform=identity,
-            right_gripper=np.asarray(current[13]),
+            right_gripper=np.asarray(np.clip(current[13] / _POLICY_TO_HARDWARE_GRIPPER_SCALE, 0.0, 1.0)),
         )
         anchor = BiYAMQueryAnchor(
             left_pose=left_pose.copy(),
@@ -157,10 +166,20 @@ class BiYAMActionAdapter:
             raise ValueError("EE action is missing its measured query anchor")
 
         decoded = decode_bimanual_action(action)
+        model_action = np.asarray(action, dtype=np.float64)
+        logger.info(
+            "EE model row: left_xyz_m(tool)=%s left_r6d_rows=%s right_xyz_m(tool)=%s right_r6d_rows=%s",
+            np.array2string(model_action[:3], precision=6, separator=",", suppress_small=False),
+            np.array2string(model_action[3:9], precision=6, separator=",", suppress_small=False),
+            np.array2string(model_action[10:13], precision=6, separator=",", suppress_small=False),
+            np.array2string(model_action[13:19], precision=6, separator=",", suppress_small=False),
+        )
         left_gripper = float(decoded.left_gripper)
         right_gripper = float(decoded.right_gripper)
-        if not 0.0 <= left_gripper <= 1.0 or not 0.0 <= right_gripper <= 1.0:
-            raise ValueError("EE action grippers must be in [0, 1]")
+        if not np.isfinite(left_gripper) or not np.isfinite(right_gripper):
+            raise ValueError("EE action grippers must be finite")
+        left_gripper = float(np.clip(left_gripper, 0.0, 1.0) * _POLICY_TO_HARDWARE_GRIPPER_SCALE)
+        right_gripper = float(np.clip(right_gripper, 0.0, 1.0) * _POLICY_TO_HARDWARE_GRIPPER_SCALE)
         assert self._left_kinematics is not None and self._right_kinematics is not None
         with self._kinematics_lock:
             left_q = self._left_kinematics.ik(anchor.left_pose @ decoded.left_delta_transform, anchor.left_q)

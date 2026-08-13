@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import multiprocessing as mp
 import queue
 import threading
@@ -27,6 +28,11 @@ from typing import Any, Protocol
 import numpy as np
 
 from .config_bi_yam import YAMArmConfig
+
+logger = logging.getLogger(__name__)
+
+_GRIPPER_ENCODER_PERIOD_RAD = 2 * np.pi
+_GRIPPER_REBASE_TIMEOUT_S = 0.25
 
 
 class ArmBackend(Protocol):
@@ -151,6 +157,84 @@ class _I2RTHardwareBackend:
             raise RuntimeError(f"Timed out stopping i2rt thread {thread.name!r}")
 
 
+def _nearest_calibrated_gripper_turns(
+    current_position: float,
+    calibration_limits: tuple[float, float],
+) -> int:
+    """Return the 2π branch shift that puts a motor reading nearest its calibrated stroke."""
+
+    limits = np.asarray(calibration_limits, dtype=np.float64)
+    if limits.shape != (2,) or not np.isfinite(limits).all() or limits[0] == limits[1]:
+        raise ValueError("gripper calibration limits must be two distinct finite values")
+    if not np.isfinite(current_position):
+        raise ValueError("gripper motor position must be finite")
+    if abs(float(limits[1] - limits[0])) >= _GRIPPER_ENCODER_PERIOD_RAD:
+        raise ValueError("gripper calibration stroke must be shorter than one encoder revolution")
+
+    calibration_center = float(np.mean(limits))
+    return int(np.rint((calibration_center - current_position) / _GRIPPER_ENCODER_PERIOD_RAD))
+
+
+def _rebase_calibrated_gripper_encoder(
+    backend: ArmBackend,
+    calibration_limits: tuple[float, float] | None,
+) -> None:
+    """Align a single-turn gripper encoder with its persisted calibrated angle branch."""
+
+    if calibration_limits is None:
+        return
+    info = backend.get_robot_info()
+    gripper_index = info.get("gripper_index")
+    if gripper_index is None:
+        return
+
+    motor_chain = getattr(backend, "motor_chain", None)
+    if motor_chain is None:
+        raise RuntimeError("i2rt gripper backend does not expose its motor chain")
+    motor_states = motor_chain.read_states()
+    current_position = float(motor_states[gripper_index].pos)
+    turns = _nearest_calibrated_gripper_turns(current_position, calibration_limits)
+    if turns == 0:
+        return
+    if abs(turns) != 1:
+        raise RuntimeError(
+            f"refusing to rebase gripper encoder by {turns} revolutions from {current_position:.6f} rad"
+        )
+
+    direction = float(motor_chain.motor_direction[gripper_index])
+    if not np.isfinite(direction) or direction == 0.0:
+        raise RuntimeError("i2rt gripper motor direction must be finite and nonzero")
+    old_offset = float(motor_chain.motor_offset[gripper_index])
+    offset_delta = -turns * _GRIPPER_ENCODER_PERIOD_RAD / direction
+    motor_chain.motor_offset[gripper_index] = old_offset + offset_delta
+
+    closed, open_ = calibration_limits
+    corrected_position = current_position + turns * _GRIPPER_ENCODER_PERIOD_RAD
+    expected_normalized = (corrected_position - closed) / (open_ - closed)
+    deadline = time.monotonic() + _GRIPPER_REBASE_TIMEOUT_S
+    actual_normalized = float(backend.get_joint_pos()[gripper_index])
+    while time.monotonic() < deadline and not np.isclose(
+        actual_normalized, expected_normalized, atol=1e-3, rtol=0.0
+    ):
+        time.sleep(0.005)
+        actual_normalized = float(backend.get_joint_pos()[gripper_index])
+    if not np.isfinite(actual_normalized) or not np.isclose(
+        actual_normalized, expected_normalized, atol=1e-3, rtol=0.0
+    ):
+        motor_chain.motor_offset[gripper_index] = old_offset
+        raise RuntimeError(
+            "i2rt gripper encoder branch correction did not reach the expected normalized position"
+        )
+
+    logger.info(
+        "Rebased calibrated gripper encoder by %+d turn (raw %.6f -> %.6f rad, normalized %.6f)",
+        turns,
+        current_position,
+        corrected_position,
+        actual_normalized,
+    )
+
+
 def _find_motor_control_threads(
     motor_chain: Any,
     threads_before_startup: set[threading.Thread],
@@ -200,6 +284,12 @@ def make_i2rt_backend(config: YAMArmConfig) -> ArmBackend:
         sim=config.sim,
         enable_auto_recovery=config.enable_auto_recovery,
     )
+    if not config.sim and config.gripper_type == "linear_4310":
+        try:
+            _rebase_calibrated_gripper_encoder(backend, config.gripper_limits_override)
+        except Exception:
+            backend.close()
+            raise
     motor_chain = getattr(backend, "motor_chain", None)
     if motor_chain is None:
         return backend

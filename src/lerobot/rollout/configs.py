@@ -367,6 +367,8 @@ class RolloutConfig:
 
         policy_path = parser.get_path_arg("policy")
         is_remote = isinstance(self.inference, RemoteInferenceConfig)
+        if is_remote and self.inference.sequential_chunk_execution and self.interpolation_multiplier != 1:
+            raise ValueError("Remote sequential chunk execution requires --interpolation_multiplier=1")
         if is_remote and policy_path:
             raise ValueError(
                 "Remote inference does not load --policy.path on the robot computer. "

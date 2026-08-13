@@ -21,6 +21,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import torch
 
@@ -90,7 +91,7 @@ def test_dagger_config_defaults():
 
 
 def test_inference_config_types():
-    from lerobot.rollout import RTCInferenceConfig, SyncInferenceConfig
+    from lerobot.rollout import RemoteInferenceConfig, RTCInferenceConfig, SyncInferenceConfig
 
     assert SyncInferenceConfig().type == "sync"
 
@@ -98,6 +99,181 @@ def test_inference_config_types():
     assert rtc.type == "rtc"
     assert rtc.queue_threshold == 30
     assert rtc.rtc is not None
+
+    remote = RemoteInferenceConfig()
+    assert remote.type == "remote"
+    assert remote.sequential_chunk_execution is False
+
+
+def test_remote_async_holds_without_advancing_while_queue_is_empty():
+    from lerobot.remote_inference.schema import ImageEncoding, PolicyActionChunk
+    from lerobot.rollout.inference.remote import (
+        RemoteEngineSettings,
+        RemoteInferenceEngine,
+        _PendingChunk,
+    )
+    from lerobot.utils.constants import ACTION, OBS_STATE
+
+    wrapper = MagicMock()
+    wrapper.inner = SimpleNamespace(id="test-robot")
+    wrapper.robot_type = "test_robot"
+    wrapper.observation_features = {"test_camera": (1, 1, 3)}
+    features = {
+        OBS_STATE: {"names": ["joint.pos"]},
+        ACTION: {"names": ["joint.pos"]},
+    }
+    settings = RemoteEngineSettings(
+        server_address="127.0.0.1:8081",
+        schema_id="lerobot-remote-v1",
+        requested_model_id="test/model",
+        client_instance_id="test-client",
+        connect_timeout_s=1.0,
+        inference_timeout_s=1.0,
+        max_message_bytes=1024,
+        jpeg_quality=95,
+        tls_root_cert_path=None,
+        tls_client_cert_path=None,
+        tls_client_key_path=None,
+        tls_server_name_override=None,
+        execution_horizon=1,
+        sequential_chunk_execution=False,
+        image_encoding=ImageEncoding.JPEG,
+        camera_calibration_sha256={},
+    )
+    engine = RemoteInferenceEngine(
+        settings=settings,
+        robot_wrapper=wrapper,
+        dataset_features=features,
+        ordered_action_keys=["joint.pos"],
+        task="test",
+        fps=30.0,
+    )
+
+    engine.resume()
+    engine.notify_observation({"joint.pos": 0.25})
+    initial_hold = engine.get_action(None)
+    assert initial_hold is not None
+    assert initial_hold.item() == pytest.approx(0.25)
+    engine.notify_action_sent()
+    assert engine._current_tick == 0
+
+    engine._last_submitted_sequence = 0
+    engine._pending_chunk = _PendingChunk(
+        chunk=PolicyActionChunk(
+            observation_sequence=0,
+            first_action_tick=0,
+            actions=np.asarray([[0.5]], dtype=np.float32),
+            model_fingerprint="test",
+        ),
+        round_trip_ns=100_000_000,
+        anchor=None,
+    )
+    assert engine._activate_pending_chunk_locked()
+    policy_action = engine.get_action(None)
+    assert policy_action is not None
+    assert policy_action.item() == pytest.approx(0.5)
+    engine.notify_action_sent()
+    assert engine._current_tick == 1
+
+    queue_gap_hold = engine.get_action(None)
+    assert queue_gap_hold is not None
+    assert queue_gap_hold.item() == pytest.approx(0.5)
+    engine.notify_action_sent()
+    assert engine._current_tick == 1
+
+
+def test_remote_sequential_chunks_execute_exact_horizon_and_hold_without_advancing():
+    from lerobot.remote_inference.schema import ImageEncoding, PolicyActionChunk
+    from lerobot.rollout.inference.remote import (
+        RemoteEngineSettings,
+        RemoteInferenceEngine,
+        _PendingChunk,
+    )
+    from lerobot.utils.constants import ACTION, OBS_STATE
+
+    wrapper = MagicMock()
+    wrapper.inner = SimpleNamespace(id="test-robot")
+    wrapper.robot_type = "test_robot"
+    wrapper.observation_features = {"test_camera": (1, 1, 3)}
+    features = {
+        OBS_STATE: {"names": ["joint.pos"]},
+        ACTION: {"names": ["joint.pos"]},
+    }
+    settings = RemoteEngineSettings(
+        server_address="127.0.0.1:8081",
+        schema_id="lerobot-remote-v1",
+        requested_model_id="test/model",
+        client_instance_id="test-client",
+        connect_timeout_s=1.0,
+        inference_timeout_s=1.0,
+        max_message_bytes=1024,
+        jpeg_quality=95,
+        tls_root_cert_path=None,
+        tls_client_cert_path=None,
+        tls_client_key_path=None,
+        tls_server_name_override=None,
+        execution_horizon=2,
+        sequential_chunk_execution=True,
+        image_encoding=ImageEncoding.JPEG,
+        camera_calibration_sha256={},
+    )
+    engine = RemoteInferenceEngine(
+        settings=settings,
+        robot_wrapper=wrapper,
+        dataset_features=features,
+        ordered_action_keys=["joint.pos"],
+        task="test",
+        fps=30.0,
+    )
+
+    engine.resume()
+    engine.notify_observation({"joint.pos": 0.25})
+    first_hold = engine.get_action(None)
+    assert first_hold is not None
+    assert first_hold.item() == pytest.approx(0.25)
+    engine.notify_action_sent()
+    assert engine._current_tick == 0
+
+    # Simulate the first inference completing. Sequential mode must queue only
+    # the requested execution horizon, not the rest of the model's chunk.
+    engine._last_submitted_sequence = 0
+    engine._pending_chunk = _PendingChunk(
+        chunk=PolicyActionChunk(
+            observation_sequence=0,
+            first_action_tick=0,
+            actions=np.arange(4, dtype=np.float32).reshape(4, 1),
+            model_fingerprint="test",
+        ),
+        round_trip_ns=100_000_000,
+        anchor=None,
+    )
+    assert engine._activate_pending_chunk_locked()
+    assert engine.action_queue_depth == 2
+
+    first = engine.get_action(None)
+    assert first is not None and first.item() == pytest.approx(0.0)
+    engine.notify_action_sent()
+    second = engine.get_action(None)
+    assert second is not None and second.item() == pytest.approx(1.0)
+    engine.notify_action_sent()
+    assert engine._current_tick == 2
+    assert engine._active_chunk_sequence is None
+
+    # The pre-dispatch observation is not reused. While waiting for a fresh
+    # observation/inference result, dispatches repeat the last joint command
+    # without consuming policy ticks.
+    with engine._lock:
+        assert not engine._should_request_locked()
+    final_hold = engine.get_action(None)
+    assert final_hold is not None and final_hold.item() == pytest.approx(1.0)
+    engine.notify_action_sent()
+    assert engine._current_tick == 2
+
+    engine.notify_observation({"joint.pos": 0.75})
+    with engine._lock:
+        assert engine._should_request_locked()
+    refreshed_hold = engine.get_action(None)
+    assert refreshed_hold is not None and refreshed_hold.item() == pytest.approx(0.75)
 
 
 def test_sentry_config_defaults():
