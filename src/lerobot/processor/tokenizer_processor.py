@@ -65,7 +65,10 @@ class TokenizerProcessorStep(ObservationProcessorStep):
 
     Attributes:
         tokenizer_name: The name of a pretrained tokenizer from the Hugging Face Hub (e.g., "bert-base-uncased").
-        tokenizer: A pre-initialized tokenizer object. If provided, `tokenizer_name` is ignored.
+        tokenizer_revision: Optional Hub revision that pins `tokenizer_name`.
+        tokenizer_load_path: Optional local source used at runtime instead of `tokenizer_name`.
+            This path is deliberately omitted from serialized processor configs.
+        tokenizer: A pre-initialized tokenizer object. If provided, the tokenizer source is ignored.
         max_length: The maximum length to pad or truncate sequences to.
         task_key: The key in `complementary_data` where the task string is stored.
         padding_side: The side to pad on ('left' or 'right').
@@ -75,6 +78,8 @@ class TokenizerProcessorStep(ObservationProcessorStep):
     """
 
     tokenizer_name: str | None = None
+    tokenizer_revision: str | None = None
+    tokenizer_load_path: str | None = None
     tokenizer: Any | None = None  # Use `Any` for compatibility without a hard dependency
     max_length: int = 512
     task_key: str = "task"
@@ -105,10 +110,14 @@ class TokenizerProcessorStep(ObservationProcessorStep):
         if self.tokenizer is not None:
             # Use provided tokenizer object directly
             self.input_tokenizer = self.tokenizer
-        elif self.tokenizer_name is not None:
+        elif self.tokenizer_load_path is not None or self.tokenizer_name is not None:
             if AutoTokenizer is None:
                 raise ImportError("AutoTokenizer is not available")
-            self.input_tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
+            tokenizer_source = self.tokenizer_load_path or self.tokenizer_name
+            tokenizer_kwargs = {}
+            if self.tokenizer_load_path is None and self.tokenizer_revision is not None:
+                tokenizer_kwargs["revision"] = self.tokenizer_revision
+            self.input_tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, **tokenizer_kwargs)
         else:
             raise ValueError(
                 "Either 'tokenizer' or 'tokenizer_name' must be provided. "
@@ -287,9 +296,11 @@ class TokenizerProcessorStep(ObservationProcessorStep):
             "truncation": self.truncation,
         }
 
-        # Only save tokenizer_name if it was used to create the tokenizer
+        # Save the portable identity even when tokenizer_load_path supplied the runtime files.
         if self.tokenizer_name is not None and self.tokenizer is None:
             config["tokenizer_name"] = self.tokenizer_name
+            if self.tokenizer_revision is not None:
+                config["tokenizer_revision"] = self.tokenizer_revision
 
         return config
 

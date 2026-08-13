@@ -35,6 +35,7 @@ from lerobot.robots.bi_yam import (
     BiYAMFollowerConfig,
     YAMArmConfig,
 )
+from lerobot.robots.bi_yam.config_bi_yam import BI_YAM_MAX_GRIPPER_POSITION
 from lerobot.robots.bi_yam.worker import (
     ArmCommand,
     ArmControl,
@@ -313,7 +314,12 @@ def test_generic_config_has_portable_tested_defaults_and_factory_support(tmp_pat
     assert config.calibration_side is None
     assert config.max_joint_delta == 0.1
     assert config.max_gripper_delta == 0.03
-    assert (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0) == BI_YAM_POLICY_START_POSITION
+    assert (
+        *([0.0] * 6),
+        BI_YAM_MAX_GRIPPER_POSITION,
+        *([0.0] * 6),
+        BI_YAM_MAX_GRIPPER_POSITION,
+    ) == BI_YAM_POLICY_START_POSITION
     assert config.policy_start_position == BI_YAM_POLICY_START_POSITION
     assert config.policy_reset_step_size == 0.01
     assert config.policy_reset_max_steps == 100
@@ -644,7 +650,7 @@ def test_connect_stays_disarmed_and_observation_uses_ordered_state_and_camera(tm
     assert not robot.is_armed
     assert list(observation) == [*YAM_SCALAR_KEYS, "top"]
     expected = np.arange(14, dtype=np.float64) / 10
-    expected[13] = 1.0
+    expected[13] = BI_YAM_MAX_GRIPPER_POSITION
     assert [observation[key] for key in YAM_SCALAR_KEYS] == pytest.approx(expected)
     assert observation["top"].shape == (3, 4, 3)
     assert camera.read_latest_calls == 1
@@ -658,13 +664,13 @@ def test_connect_stays_disarmed_and_observation_uses_ordered_state_and_camera(tm
 def test_gripper_stop_overtravel_is_accepted_and_clipped_in_observations(tmp_path):
     robot, workers = make_robot(tmp_path)
     robot.connect()
-    workers["left"].positions[6] = 1.1
+    workers["left"].positions[6] = BI_YAM_MAX_GRIPPER_POSITION + 0.1
     workers["right"].positions[6] = -0.1
 
     observation = robot.get_observation()
     robot.arm()
 
-    assert observation["left_gripper.pos"] == 1.0
+    assert observation["left_gripper.pos"] == BI_YAM_MAX_GRIPPER_POSITION
     assert observation["right_gripper.pos"] == 0.0
     assert robot.is_armed
     robot.disconnect()
@@ -733,7 +739,9 @@ def test_operational_limit_clipping_is_reflected_in_returned_action(tmp_path):
 
     applied = robot.send_action(dict.fromkeys(YAM_SCALAR_KEYS, 20.0))
 
-    assert list(applied.values()) == pytest.approx([1.0] * 6 + [1.0] + [1.0] * 6 + [1.0])
+    assert list(applied.values()) == pytest.approx(
+        [1.0] * 6 + [BI_YAM_MAX_GRIPPER_POSITION] + [1.0] * 6 + [BI_YAM_MAX_GRIPPER_POSITION]
+    )
     robot.disconnect()
 
 
@@ -750,7 +758,15 @@ def test_policy_reset_reaches_configured_pose_with_molmoact2_sized_steps(tmp_pat
     )
     robot, workers = make_robot(tmp_path, config=config)
     robot.connect()
-    initial = np.asarray([*([0.025] * 6), 0.95, *([0.025] * 6), 0.05], dtype=np.float64)
+    initial = np.asarray(
+        [
+            *([0.025] * 6),
+            BI_YAM_MAX_GRIPPER_POSITION - 0.05,
+            *([0.025] * 6),
+            0.05,
+        ],
+        dtype=np.float64,
+    )
     workers["left"].positions = initial[:7].copy()
     workers["right"].positions = initial[7:].copy()
     robot.arm()
@@ -788,14 +804,14 @@ def test_policy_end_reset_uses_fixed_home_pose_instead_of_configured_start(tmp_p
         0.0,
         0.0,
         0.0,
-        1.0,
+        BI_YAM_MAX_GRIPPER_POSITION,
         0.0,
         0.4,
         0.8,
         0.0,
         0.0,
         0.0,
-        1.0,
+        BI_YAM_MAX_GRIPPER_POSITION,
     )
     config = make_config(
         tmp_path,

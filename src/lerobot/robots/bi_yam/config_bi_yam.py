@@ -30,7 +30,19 @@ YAM_SCALAR_KEYS = (
     "right_gripper.pos",
 )
 
-BI_YAM_POLICY_END_POSITION = (*([0.0] * 6), 1.0, *([0.0] * 6), 1.0)
+# I2RT's linear_4310 hardware config declares a nominal 96 mm full stroke.
+# Policy grippers remain normalized to [0, 1], while deployed BiYAM motion uses
+# 85 mm as physical "open" relative to a full-stroke hardware calibration.
+I2RT_GRIPPER_STROKE_MM = 96.0
+BI_YAM_MAX_GRIPPER_WIDTH_MM = 85.0
+BI_YAM_MAX_GRIPPER_POSITION = BI_YAM_MAX_GRIPPER_WIDTH_MM / I2RT_GRIPPER_STROKE_MM
+
+BI_YAM_POLICY_END_POSITION = (
+    *([0.0] * 6),
+    BI_YAM_MAX_GRIPPER_POSITION,
+    *([0.0] * 6),
+    BI_YAM_MAX_GRIPPER_POSITION,
+)
 BI_YAM_POLICY_START_POSITION = BI_YAM_POLICY_END_POSITION
 
 
@@ -151,7 +163,7 @@ class BiYAMFollowerConfig(RobotConfig):
 
     left_joint_limits: list[tuple[float, float]] = field(default_factory=_default_joint_limits)
     right_joint_limits: list[tuple[float, float]] = field(default_factory=_default_joint_limits)
-    gripper_limits: tuple[float, float] = (0.0, 1.0)
+    gripper_limits: tuple[float, float] = (0.0, BI_YAM_MAX_GRIPPER_POSITION)
     gripper_state_tolerance: float = 0.15
     max_joint_delta: float = 0.1
     max_gripper_delta: float = 0.03
