@@ -40,6 +40,195 @@ On the dual-YAM computer:
 uv sync --locked --extra core_scripts --extra remote --extra bi_yam --extra intelrealsense
 ```
 
+## Dual-UMI EE20 policies
+
+The standard training source is
+[`brandonyang/dual-lidar-umi-independent`](https://huggingface.co/datasets/brandonyang/dual-lidar-umi-independent)
+at revision `a95b079b2b3dc73a912ecd12967f22f825d04fa8`. It is an ordinary
+LeRobot dataset with two 800x600, 30 FPS wrist videos (`umi1` is left and
+`umi2` is right), normalized grippers (`0` closed, `1` open), and independent
+per-arm trajectories whose episode origins are zero. No converted dataset is
+required.
+
+Set `--dataset.action_transform=umi_yam_ee` while training. The dataset factory
+then removes the final 24 queries of each episode and derives a 24x20 target at
+runtime. For each arm and each `k=1..24`, it computes
+`DeltaT_k = inverse(T_t) @ T_(t+k)` and stores `xyz`, the first two **rows** of
+the relative rotation matrix, and the absolute future gripper. The two 10-D
+arms are concatenated left then right. The observation state is the identity
+pose in each arm's query frame plus its current normalized gripper. The source
+task text is preserved; this revision contains
+`pick up all the oranges and put them in the bowl.`
+
+The recommended 12,000-step training settings use horizon 24, seed 1000,
+per-process batch 4, eight loader workers, no validation split, 600 warmup
+steps, and cosine decay through step 12,000. Minimal MolmoAct2 and Pi0.5
+commands are:
+
+```bash
+COLOR_JITTER='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.8,1.2]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.8,1.2]}},"saturation":{"weight":1.0,"type":"ColorJitter","kwargs":{"saturation":[0.8,1.2]}}}'
+
+uv run lerobot-train \
+    --dataset.repo_id=brandonyang/dual-lidar-umi-independent \
+    --dataset.revision=a95b079b2b3dc73a912ecd12967f22f825d04fa8 \
+    --dataset.action_transform=umi_yam_ee \
+    --dataset.video_backend=pyav \
+    --dataset.eval_split=0 \
+    --dataset.image_transforms.enable=true \
+    --dataset.image_transforms.tfs="$COLOR_JITTER" \
+    --policy.type=molmoact2 \
+    --policy.checkpoint_path=allenai/MolmoAct2-BimanualYAM \
+    --policy.checkpoint_revision=8dcbed66f2380e4393189c303ea72488eb9e63c2 \
+    --policy.device=cuda \
+    --policy.discrete_action_tokenizer=allenai/MolmoAct2-FAST-Tokenizer \
+    --policy.discrete_action_tokenizer_revision=d45593b4c863d0bc1ca064f8b352fa16b75c38e8 \
+    --policy.action_mode=both \
+    --policy.inference_action_mode=continuous \
+    --policy.setup_type="bimanual yam robotic arms in molmoact2" \
+    --policy.control_mode="current-relative dual end-effector trajectory" \
+    --policy.image_keys='["observation.images.umi1","observation.images.umi2"]' \
+    --policy.chunk_size=24 \
+    --policy.n_action_steps=24 \
+    --policy.model_dtype=bfloat16 \
+    --policy.train_mode_vlm=lora \
+    --policy.gradient_checkpointing=true \
+    --policy.optimizer_action_expert_lr=1e-4 \
+    --policy.scheduler_warmup_steps=600 \
+    --policy.scheduler_decay_steps=12000 \
+    --policy.scheduler_decay_lr=1e-6 \
+    --batch_size=4 \
+    --num_workers=8 \
+    --seed=1000 \
+    --log_freq=20 \
+    --env_eval_freq=0 \
+    --save_freq=1000 \
+    --steps=12000 \
+    --output_dir=outputs/train/umi-yam-molmo-ee20
+
+uv run lerobot-train \
+    --dataset.repo_id=brandonyang/dual-lidar-umi-independent \
+    --dataset.revision=a95b079b2b3dc73a912ecd12967f22f825d04fa8 \
+    --dataset.action_transform=umi_yam_ee \
+    --dataset.video_backend=pyav \
+    --dataset.eval_split=0 \
+    --dataset.image_transforms.enable=true \
+    --dataset.image_transforms.tfs="$COLOR_JITTER" \
+    --policy.path=lerobot/pi05_base \
+    --policy.pretrained_revision=b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba \
+    --policy.device=cuda \
+    --policy.dtype=float32 \
+    --policy.chunk_size=24 \
+    --policy.n_action_steps=24 \
+    --policy.use_relative_actions=false \
+    --policy.num_inference_steps=10 \
+    --policy.gradient_checkpointing=true \
+    --policy.compile_model=false \
+    --policy.optimizer_lr=2.5e-5 \
+    --policy.optimizer_weight_decay=0.01 \
+    --policy.scheduler_warmup_steps=600 \
+    --policy.scheduler_decay_steps=12000 \
+    --policy.scheduler_decay_lr=2.5e-6 \
+    --rename_map='{"observation.images.umi1":"observation.images.left_wrist_0_rgb","observation.images.umi2":"observation.images.right_wrist_0_rgb"}' \
+    --batch_size=4 \
+    --num_workers=8 \
+    --seed=1000 \
+    --log_freq=20 \
+    --env_eval_freq=0 \
+    --save_freq=1000 \
+    --steps=12000 \
+    --output_dir=outputs/train/umi-yam-pi05-ee20
+```
+
+The existing EE deployment artifacts were trained on the earlier equivalent
+182-episode prepared source; they are listed separately so their provenance is
+not confused with the standard loader above:
+
+| Policy | Immutable checkpoint revision |
+|---|---|
+| [`ASethi04/MolmoAct2-BimanualYAM-long-gripper182-ee20`](https://huggingface.co/ASethi04/MolmoAct2-BimanualYAM-long-gripper182-ee20) | `4b8761be7134a344cc53e222a2aee71c4edb518f` |
+| [`ASethi04/pi05-BimanualYAM-long-gripper182-ee20`](https://huggingface.co/ASethi04/pi05-BimanualYAM-long-gripper182-ee20) | `8a42009ff0b7915f0165b01c98cda5cd859f0b71` |
+
+These checkpoints use the exact deployment task
+`pick up oranges and place them in the bowl`. A Pi0.5 server must first accept
+the terms for
+[`google/paligemma-3b-pt-224`](https://huggingface.co/google/paligemma-3b-pt-224)
+and authenticate with `hf auth login`.
+
+Start either checkpoint on the GPU server, using the matching row above:
+
+```bash
+MODEL_ID=ASethi04/pi05-BimanualYAM-long-gripper182-ee20
+MODEL_REVISION=8a42009ff0b7915f0165b01c98cda5cd859f0b71
+
+uv run lerobot-policy-server \
+    --policy.pretrained_name_or_path="$MODEL_ID" \
+    --policy.revision="$MODEL_REVISION" \
+    --policy.device=cuda \
+    --host=0.0.0.0 \
+    --port=8081
+```
+
+On the robot computer, set `MODEL_ID` to the exact checkpoint used by the
+server. Then use the same two mounted custom-UMI cameras as the demonstrations
+and verify their previews before motion:
+
+```bash
+MODEL_ID=ASethi04/pi05-BimanualYAM-long-gripper182-ee20
+UMI1_CAMERA=<left-umi-opencv-stable-path>
+UMI2_CAMERA=<right-umi-opencv-stable-path>
+CAMERAS="{umi1: {type: opencv, index_or_path: '$UMI1_CAMERA', width: 800, height: 600, fps: 30, fourcc: 'MJPG', warmup_s: 2}, umi2: {type: opencv, index_or_path: '$UMI2_CAMERA', width: 800, height: 600, fps: 30, fourcc: 'MJPG', warmup_s: 2}}"
+```
+
+After discovering CAN adapter serials and calibrating as described below, run a
+no-motion probe first. Horizon 24 is required for these policies; all 24 rows
+remain relative to the measured query anchor.
+
+```bash
+uv run lerobot-rollout \
+    --strategy.type=action_probe \
+    --strategy.reset_robot=false \
+    --strategy.action_log_path=outputs/umi-yam-ee20-probe.jsonl \
+    --inference.type=remote \
+    --inference.server_address=<server-ip>:8081 \
+    --inference.requested_model_id="$MODEL_ID" \
+    --inference.bi_yam_action_mode=ee \
+    --inference.execution_horizon=24 \
+    --robot.type=bi_yam_follower \
+    --robot.id=<robot-id> \
+    --robot.left_arm_config.adapter_serial=<left-can-adapter-serial> \
+    --robot.right_arm_config.adapter_serial=<right-can-adapter-serial> \
+    --robot.cameras="$CAMERAS" \
+    --task="pick up oranges and place them in the bowl" \
+    --fps=30 \
+    --duration=10
+```
+
+For a supervised live run, use the same values with `--strategy.type=base`,
+remove the two other `--strategy.*` probe options, and enable run logging. Keep
+the default `--robot.max_joint_delta=0.10` and
+`--robot.max_gripper_delta=0.03` safety limits.
+
+The robot-side adapter uses only I2RT
+`7ed46f4e4e316133a0c39aa6cf34a73d2718e850`: FK supplies the measured 220 mm
+UMI-compatible `grasp_site`, each arm's target is `T_t @ DeltaT_k`, and the two
+IK solves are independent. There is no additional frame transform or legacy
+UMI bridge. A command is rejected before dispatch if IK/FK disagrees by more
+than 2 mm or 1 mrad, violates I2RT joint limits, or moves any solved joint more
+than 0.10 rad from its query seed. These gates do not provide self-collision,
+inter-arm, or environment-collision checking; live runs still require direct
+supervision and a ready stop method.
+
+Training grippers remain normalized to `[0,1]`. I2RT maps driver command space
+linearly onto the saved closed/open calibration endpoints, and its
+`linear_4310` hardware config declares a nominal 96 mm full stroke. With both
+grippers calibrated across that full stroke, the adapter maps model `[0,1]` to
+driver `[0,85/96]`; reset and policy commands then stop at the configured 85 mm
+maximum opening. Recalibrate before deployment if either saved endpoint is not
+the physical full-open endpoint.
+
+The remaining commands are generic examples retained for older checkpoints;
+EE20 deployments must use the pinned model, exact task, and H24 settings above.
+
 ## Start the server
 
 For MolmoAct2, run this on the GPU machine:
@@ -356,13 +545,13 @@ change the output root.
 The default reset target is:
 
 ```text
-[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]
+[0, 0, 0, 0, 0, 0, 0.8854166667, 0, 0, 0, 0, 0, 0, 0.8854166667]
 ```
 
-This is six zero joint targets and an open gripper for each arm. Reset waypoints
-are at most `0.01` apart at 30 Hz and capped at 100 interpolation steps. The
-client holds the final target, requires every value within `0.035`, and idles
-both arms if the pose is not reached within 30 seconds.
+This is six zero joint targets and an 85 mm gripper opening for each arm. Reset
+waypoints are at most `0.01` apart at 30 Hz and capped at 100 interpolation
+steps. The client holds the final target, requires every value within `0.035`,
+and idles both arms if the pose is not reached within 30 seconds.
 
 Policy commands use the tested operational joint bounds, per-tick limits of
 `0.10` radians for joints and `0.03` normalized units for grippers, and a

@@ -138,7 +138,9 @@ def make_pi05_pre_post_processors(
         steps.normalize,
         Pi05PrepareStateTokenizerProcessorStep(max_state_dim=config.max_state_dim),
         TokenizerProcessorStep(
-            tokenizer_name="google/paligemma-3b-pt-224",
+            tokenizer_name=config.tokenizer_name,
+            tokenizer_revision=config.tokenizer_revision,
+            tokenizer_load_path=config.tokenizer_load_path,
             max_length=config.tokenizer_max_length,
             padding_side="right",
             padding="max_length",

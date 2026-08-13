@@ -44,6 +44,9 @@ class DatasetConfig:
     # Has no effect on datasets without depth cameras.
     depth_output_unit: str = DEFAULT_DEPTH_UNIT
     streaming: bool = False
+    # Optional in-memory action transform applied by the training dataset factory.
+    # ``umi_yam_ee`` converts the standard dual-UMI 14-D pose rows to H24 EE20.
+    action_transform: str | None = None
     # Fraction of episodes held out per task for offline evaluation (0.0 = disabled).
     eval_split: float = 0.0
 
@@ -52,6 +55,8 @@ class DatasetConfig:
             raise ValueError(
                 f"depth_output_unit must be '{DEPTH_METER_UNIT}' or '{DEPTH_MILLIMETER_UNIT}', got {self.depth_output_unit!r}"
             )
+        if self.action_transform not in (None, "umi_yam_ee"):
+            raise ValueError(f"action_transform must be unset or 'umi_yam_ee', got {self.action_transform!r}")
         if not (0.0 <= self.eval_split < 1.0):
             raise ValueError(f"eval_split must be in [0.0, 1.0), got {self.eval_split}")
         if self.episodes is not None:

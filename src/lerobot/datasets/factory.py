@@ -23,12 +23,13 @@ from lerobot.configs import PreTrainedConfig
 from lerobot.configs.rewards import RewardModelConfig
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.transforms import ImageTransforms
-from lerobot.utils.constants import ACTION, IMAGENET_STATS, OBS_PREFIX, REWARD
+from lerobot.utils.constants import ACTION, IMAGENET_STATS, OBS_PREFIX, OBS_STATE, REWARD
 
 from .dataset_metadata import LeRobotDatasetMetadata
 from .lerobot_dataset import LeRobotDataset
 from .multi_dataset import MultiLeRobotDataset
 from .streaming_dataset import StreamingLeRobotDataset
+from .umi_yam_ee import ACTION_HORIZON, UMIYAMEEDataset
 
 
 def resolve_delta_timestamps(
@@ -66,7 +67,21 @@ def resolve_delta_timestamps(
     return delta_timestamps
 
 
-def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
+def _validate_umi_yam_ee_config(cfg: TrainPipelineConfig) -> None:
+    if cfg.dataset.streaming:
+        raise ValueError("umi_yam_ee requires a non-streaming LeRobot dataset")
+    policy = cfg.trainable_config
+    if getattr(policy, "chunk_size", None) != ACTION_HORIZON:
+        raise ValueError(f"umi_yam_ee requires policy.chunk_size={ACTION_HORIZON}")
+    if getattr(policy, "n_action_steps", None) != ACTION_HORIZON:
+        raise ValueError(f"umi_yam_ee requires policy.n_action_steps={ACTION_HORIZON}")
+    if getattr(policy, "use_relative_actions", False):
+        raise ValueError("umi_yam_ee is already SE(3)-relative; disable policy.use_relative_actions")
+
+
+def make_dataset(
+    cfg: TrainPipelineConfig,
+) -> LeRobotDataset | StreamingLeRobotDataset | UMIYAMEEDataset | MultiLeRobotDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
     Args:
@@ -86,7 +101,12 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         ds_meta = LeRobotDatasetMetadata(
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
-        delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, ds_meta)
+        use_umi_yam_ee = cfg.dataset.action_transform == "umi_yam_ee"
+        if use_umi_yam_ee:
+            _validate_umi_yam_ee_config(cfg)
+            delta_timestamps = None
+        else:
+            delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, ds_meta)
         if not cfg.dataset.streaming:
             dataset = LeRobotDataset(
                 cfg.dataset.repo_id,
@@ -100,6 +120,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 depth_output_unit=cfg.dataset.depth_output_unit,
                 tolerance_s=cfg.tolerance_s,
             )
+            if use_umi_yam_ee:
+                dataset = UMIYAMEEDataset(dataset)
         else:
             dataset = StreamingLeRobotDataset(
                 cfg.dataset.repo_id,
@@ -138,7 +160,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
 def make_train_eval_datasets(
     cfg: TrainPipelineConfig,
-) -> tuple[LeRobotDataset | MultiLeRobotDataset, LeRobotDataset | None]:
+) -> tuple[
+    LeRobotDataset | StreamingLeRobotDataset | UMIYAMEEDataset | MultiLeRobotDataset,
+    LeRobotDataset | UMIYAMEEDataset | None,
+]:
     """Create train and optional eval datasets by splitting episodes based on eval_split.
 
     The last ceil(n_episodes * eval_split) episodes per task are held out for evaluation.
@@ -175,7 +200,10 @@ def make_train_eval_datasets(
         f"(eval_split={cfg.dataset.eval_split}, {len(task_to_episodes)} tasks)"
     )
 
-    delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, full_dataset.meta)
+    use_umi_yam_ee = cfg.dataset.action_transform == "umi_yam_ee"
+    delta_timestamps = (
+        None if use_umi_yam_ee else resolve_delta_timestamps(cfg.trainable_config, full_dataset.meta)
+    )
 
     train_image_transforms = (
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
@@ -204,6 +232,11 @@ def make_train_eval_datasets(
         return_uint8=True,
         tolerance_s=cfg.tolerance_s,
     )
+
+    if use_umi_yam_ee:
+        stats = {OBS_STATE: full_dataset.meta.stats[OBS_STATE], ACTION: full_dataset.meta.stats[ACTION]}
+        train_dataset = UMIYAMEEDataset(train_dataset, stats=stats)
+        eval_dataset = UMIYAMEEDataset(eval_dataset, stats=stats)
 
     if cfg.dataset.use_imagenet_stats:
         for ds in (train_dataset, eval_dataset):

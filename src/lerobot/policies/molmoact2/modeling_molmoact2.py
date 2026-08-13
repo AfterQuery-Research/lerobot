@@ -865,8 +865,10 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
             if UniversalActionProcessor is None:
                 raise RuntimeError("transformers and scipy are required to load MolmoAct2 action tokenizer.")
+            tokenizer_source, tokenizer_revision = self.config.discrete_action_tokenizer_source()
             self.action_tokenizer = UniversalActionProcessor.from_pretrained_local(
-                self.config.discrete_action_tokenizer,
+                tokenizer_source,
+                revision=tokenizer_revision,
             )
         return self.action_tokenizer
 
@@ -935,7 +937,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             )
         else:
             expected_timesteps_shape = (batch_size, num_flow_timesteps)
-            timesteps = timesteps.to(device=device, dtype=action_dtype)
+            timesteps = timesteps.to(device=device, dtype=actions.dtype)
             if tuple(timesteps.shape) != expected_timesteps_shape:
                 raise ValueError(
                     f"flow timesteps must have shape {expected_timesteps_shape}, got {tuple(timesteps.shape)}."

@@ -795,22 +795,20 @@ class PI05Policy(PreTrainedPolicy):
                 resolved_file = cached_file(
                     pretrained_name_or_path,
                     "model.safetensors",
-                    cache_dir=kwargs.get("cache_dir"),
-                    force_download=kwargs.get("force_download", False),
-                    resume_download=kwargs.get("resume_download"),
-                    proxies=kwargs.get("proxies"),
-                    token=kwargs.get("token"),
-                    revision=kwargs.get("revision"),
-                    local_files_only=kwargs.get("local_files_only", False),
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    resume_download=resume_download,
+                    proxies=proxies,
+                    token=token,
+                    revision=revision,
+                    local_files_only=local_files_only,
                 )
                 from safetensors.torch import load_file
 
                 original_state_dict = load_file(resolved_file)
                 print("✓ Loaded state dict from model.safetensors")
             except Exception as e:
-                print(f"Could not load state dict from remote files: {e}")
-                print("Returning model without loading pretrained weights")
-                return model
+                raise RuntimeError(f"Could not load pretrained PI0.5 weights: {e}") from e
 
             # First, fix any key differences (see openpi model.py, _fix_pytorch_state_dict_keys)
             fixed_state_dict = model._fix_pytorch_state_dict_keys(original_state_dict, model.config)
@@ -857,7 +855,7 @@ class PI05Policy(PreTrainedPolicy):
                 print("All keys loaded successfully!")
 
         except Exception as e:
-            print(f"Warning: Could not load state dict: {e}")
+            raise RuntimeError(f"Could not initialize pretrained PI0.5 weights: {e}") from e
 
         return model
 
@@ -955,20 +953,19 @@ class PI05Policy(PreTrainedPolicy):
         Images from LeRobot are typically in [B, C, H, W] format and normalized to [0, 1].
         PaliGemma expects images in [B, C, H, W] format and normalized to [-1, 1].
         """
-        images = []
-        img_masks = []
-
         # Get device from model parameters
         device = next(self.parameters()).device
 
         present_img_keys = [key for key in self.config.image_features if key in batch]
-        missing_img_keys = [key for key in self.config.image_features if key not in batch]
 
         if len(present_img_keys) == 0:
             raise ValueError(
                 f"All image features are missing from the batch. At least one expected. "
                 f"(batch: {batch.keys()}) (image_features: {self.config.image_features})"
             )
+
+        processed_images = {}
+        processed_img_masks = {}
 
         # Preprocess image features present in the batch
         for key in present_img_keys:
@@ -1000,18 +997,20 @@ class PI05Policy(PreTrainedPolicy):
             if is_channels_first:
                 img = img.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
-            images.append(img)
             # Create mask (all ones for real images)
             bsize = img.shape[0]
             mask = torch.ones(bsize, dtype=torch.bool, device=device)
-            img_masks.append(mask)
+            processed_images[key] = img
+            processed_img_masks[key] = mask
 
-        # Create image features not present in the batch as fully 0 padded images
-        for _num_empty_cameras in range(len(missing_img_keys)):
-            img = torch.ones_like(img) * -1  # Padded with -1 for SigLIP
-            mask = torch.zeros_like(mask)  # Mask is zero for empty cameras
-            images.append(img)
-            img_masks.append(mask)
+        # Preserve the configured camera order, inserting masked padding at each missing slot.
+        images = []
+        img_masks = []
+        empty_img = torch.full_like(img, -1)  # Padded with -1 for SigLIP
+        empty_mask = torch.zeros_like(mask)  # Mask is zero for empty cameras
+        for key in self.config.image_features:
+            images.append(processed_images.get(key, empty_img))
+            img_masks.append(processed_img_masks.get(key, empty_mask))
 
         return images, img_masks
 
